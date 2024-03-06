@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+ormar
+databases
+asyncpg
+psycopg2-binary
+pydantic
+requests
+python-dotenv
+alembic
+python-dateutil

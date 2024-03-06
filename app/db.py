@@ -1,0 +1,152 @@
+# app/db.py
+import datetime
+from enum import Enum
+from typing import Optional, AsyncGenerator, Dict, Any
+import uuid
+
+import databases
+import ormar
+import sqlalchemy
+
+from .config import settings
+
+
+database = databases.Database(settings.db_url)
+metadata = sqlalchemy.MetaData()
+
+
+class BaseMeta(ormar.ModelMeta):
+  metadata = metadata
+  database = database
+
+class BaseModel(ormar.Model):
+  class Meta(BaseMeta):
+    abstract = True  # This makes sure the class itself is not treated as a model to be created in the DB
+
+  id: uuid.UUID = ormar.UUID(primary_key=True, default=uuid.uuid4)
+  created_at: datetime.datetime = ormar.DateTime(default=datetime.datetime.utcnow, nullable=False, index=True)
+  updated_at: Optional[datetime.datetime] = ormar.DateTime(nullable=True)
+
+  @classmethod
+  def __declare_last__(cls):
+    @sqlalchemy.event.listens_for(cls, 'before_update')
+    def receive_before_update(mapper, connection, target):
+      target.updated_at = datetime.datetime.utcnow()
+
+  @classmethod
+  async def process_in_batches(cls, batch_size: int = 100, **filters: Dict[str, Any]) -> AsyncGenerator["BaseModel", None]:
+    last_created_at = None
+    while True:
+      query = cls.objects.filter(**filters)
+      if last_created_at is not None:
+        query = query.filter(created_at__gt=last_created_at)
+      query = query.order_by("created_at").limit(batch_size)
+
+      batch = await query.all()
+      if not batch:
+        break
+
+      for item in batch:
+        yield item
+
+      last_created_at = batch[-1].created_at
+
+class Company(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "companies"
+
+  name: str = ormar.String(max_length=50, nullable=False, unique=True)
+
+
+class BCCompany(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "bc_companies"
+  bc_id: str = ormar.String(max_length=24, nullable=False, unique=True)
+  name: str = ormar.Text(nullable=False)
+  data: dict = ormar.JSON(nullable=False)
+
+class BCBidStatus(Enum):
+  UNDECIDED = 0
+  NEEDS_PROPOSAL = 1
+  SUBMITTED = 2
+  WON = 3
+  LOST = 4
+  OTHER = 5
+  DECLINED = 6
+
+class BCBid(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "bc_bids"
+    constraints = [
+      sqlalchemy.UniqueConstraint('company_id', 'bc_id')
+    ]
+  company_id: Company = ormar.ForeignKey(Company, nullable=False)
+  bc_id: str = ormar.String(max_length=24, nullable=False)
+  bc_company_id: BCCompany = ormar.ForeignKey(BCCompany, nullable=False)
+  name: str = ormar.Text(nullable=False)
+  location: str = ormar.Text(nullable=True)
+  date_invited: datetime.datetime = ormar.DateTime(nullable=True)
+  status: int = ormar.Integer(nullable=False, choices=list(BCBidStatus))
+  is_archived: bool = ormar.Boolean(nullable=False)
+  data: dict = ormar.JSON(nullable=False)
+
+class DobCompany(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "dob_companies"
+  name: str = ormar.Text(nullable=False, unique=True)
+
+class DobApprovedPermit(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "dob_approved_permits"
+    constraints = [
+      sqlalchemy.UniqueConstraint('job_filing_number', 'filing_reason', 'work_type', 'applicant_business_id', 'issued_date', name='uc_dob_approved_permit_pk')
+    ]
+  job_filing_number: str = ormar.String(max_length=24, nullable=False)
+  filing_reason: str = ormar.String(max_length=100, nullable=False)
+  work_type: str = ormar.String(max_length=100, nullable=False)
+  applicant_business_id: DobCompany = ormar.ForeignKey(DobCompany, nullable=False)
+  borough: str = ormar.String(max_length=100, nullable=True)
+  block: str = ormar.String(max_length=100, nullable=True)
+  lot: str = ormar.String(max_length=100, nullable=True)
+  approved_date: datetime.datetime = ormar.DateTime(nullable=False)
+  issued_date: datetime.datetime = ormar.DateTime(nullable=False)
+  estimated_job_costs: float = ormar.Decimal(max_digits=12, decimal_places=2, nullable=True)
+  data: dict = ormar.JSON(nullable=False)
+
+class DobJobApplication(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "dob_job_applications"
+  job_filing_number: str = ormar.String(max_length=24, nullable=False, unique=True)
+  filing_status: str = ormar.String(max_length=100, nullable=False)
+  borough: str = ormar.String(max_length=100, nullable=True)
+  block: str = ormar.String(max_length=100, nullable=True)
+  lot: str = ormar.String(max_length=100, nullable=True)
+  filing_date: datetime.datetime = ormar.DateTime(nullable=False)
+  initial_cost: float = ormar.Decimal(max_digits=12, decimal_places=2, nullable=True)
+  data: dict = ormar.JSON(nullable=False)
+
+class PlutoLot(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "pluto_lots"
+    constraints = [
+      sqlalchemy.UniqueConstraint('borough', 'block', 'lot')
+    ]
+  borough: str = ormar.String(max_length=100, nullable=True)
+  block: str = ormar.String(max_length=100, nullable=True)
+  lot: str = ormar.String(max_length=100, nullable=True)
+  address: str = ormar.Text(nullable=False)
+  building_code: str = ormar.String(max_length=100, nullable=False)
+  data: dict = ormar.JSON(nullable=False)
+
+class GCPermitRollup(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "gc_permit_rollups"
+  dob_company_id: DobCompany = ormar.ForeignKey(DobCompany, nullable=False)
+  month: datetime.date = ormar.Date(nullable=False)
+  borough: str = ormar.String(max_length=100, nullable=False)
+  building_code: str = ormar.String(max_length=100, nullable=False)
+  num_permits: int = ormar.Integer(nullable=False)
+  estimated_job_costs: float = ormar.Decimal(max_digits=12, decimal_places=2, nullable=False)
+
+
+engine = sqlalchemy.create_engine(settings.db_url)
