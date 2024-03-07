@@ -108,6 +108,7 @@ class DobApprovedPermit(BaseModel):
   borough: str = ormar.String(max_length=100, nullable=True)
   block: str = ormar.String(max_length=100, nullable=True)
   lot: str = ormar.String(max_length=100, nullable=True)
+  normalized_borough: str = ormar.String(max_length=100, nullable=True)
   approved_date: datetime.datetime = ormar.DateTime(nullable=False)
   issued_date: datetime.datetime = ormar.DateTime(nullable=False)
   estimated_job_costs: float = ormar.Decimal(max_digits=12, decimal_places=2, nullable=True)
@@ -136,17 +137,38 @@ class PlutoLot(BaseModel):
   lot: str = ormar.String(max_length=100, nullable=True)
   address: str = ormar.Text(nullable=False)
   building_code: str = ormar.String(max_length=100, nullable=False)
+  normalized_borough: str = ormar.String(max_length=100, nullable=True)
   data: dict = ormar.JSON(nullable=False)
 
 class GCPermitRollup(BaseModel):
   class Meta(BaseMeta):
     tablename = "gc_permit_rollups"
+    constraints = [
+      sqlalchemy.UniqueConstraint('dob_company_id', 'start_date', 'end_date', 'borough', 'building_code', name='uc_gc_permit_rollups')
+    ]
   dob_company_id: DobCompany = ormar.ForeignKey(DobCompany, nullable=False)
-  month: datetime.date = ormar.Date(nullable=False)
-  borough: str = ormar.String(max_length=100, nullable=False)
-  building_code: str = ormar.String(max_length=100, nullable=False)
-  num_permits: int = ormar.Integer(nullable=False)
-  estimated_job_costs: float = ormar.Decimal(max_digits=12, decimal_places=2, nullable=False)
+  start_date: datetime.date = ormar.Date(nullable=False)
+  end_date: datetime.date = ormar.Date(nullable=False)
+  borough: str = ormar.String(max_length=100, nullable=True)
+  building_code: str = ormar.String(max_length=100, nullable=True)
+  num_permits: int = ormar.Integer(nullable=False, index=True)
+  average_estimated_job_costs: float = ormar.Decimal(max_digits=12, decimal_places=2, nullable=False, index=True)
+  median_estimated_job_costs: float = ormar.Decimal(max_digits=12, decimal_places=2, nullable=False, index=True)
 
+class GCChart(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "gc_charts"
+    constraints = [
+      sqlalchemy.UniqueConstraint('metric', 'start_date', 'end_date', 'borough', 'building_code', name='uc_gc_permit_charts')
+    ]
+  slug: str = ormar.String(max_length=500, nullable=False, unique=True)
+  metric: str = ormar.String(max_length=100, nullable=False)
+  start_date: datetime.date = ormar.Date(nullable=False)
+  end_date: datetime.date = ormar.Date(nullable=False)
+  borough: str = ormar.String(max_length=100, nullable=True)
+  building_code: str = ormar.String(max_length=100, nullable=True)
+  dob_company_ids: list = ormar.JSON(nullable=True, default=[])
+  deltas: list = ormar.JSON(nullable=True, default=[])
+  is_complete: bool = ormar.Boolean(nullable=False, default=False)
 
 engine = sqlalchemy.create_engine(settings.db_url)
