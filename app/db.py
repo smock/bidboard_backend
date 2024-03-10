@@ -162,6 +162,9 @@ class GCChart(BaseModel):
       sqlalchemy.UniqueConstraint('metric', 'start_date', 'end_date', 'borough', 'building_code', name='uc_gc_permit_charts')
     ]
   slug: str = ormar.String(max_length=500, nullable=False, unique=True)
+  path: str = ormar.String(max_length=500, nullable=True)
+  parent_gc_chart_id: uuid.UUID = ormar.UUID(nullable=True)
+  previous_gc_chart_id: uuid.UUID = ormar.UUID(nullable=True)
   metric: str = ormar.String(max_length=100, nullable=False)
   start_date: datetime.date = ormar.Date(nullable=False)
   end_date: datetime.date = ormar.Date(nullable=False)
@@ -170,5 +173,6 @@ class GCChart(BaseModel):
   dob_company_ids: list = ormar.JSON(nullable=True, default=[])
   deltas: list = ormar.JSON(nullable=True, default=[])
   is_complete: bool = ormar.Boolean(nullable=False, default=False)
+
 
 engine = sqlalchemy.create_engine(settings.db_url)
