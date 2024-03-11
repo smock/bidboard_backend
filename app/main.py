@@ -1,5 +1,5 @@
 # app/main.py
-from typing import Dict
+from typing import Dict, List
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,8 +29,17 @@ async def shutdown():
   if db.database.is_connected:
     await db.database.disconnect()
 
-@app.get('/api/v1/gc_charts', response_model=Dict[str, schemas.GCChart])
-async def get_gc_charts(path: str):
+@app.get('/api/v1/gc_chart_rankings', response_model=schemas.GCChart)
+async def get_gc_chart_rankings(path: str):
+  chart = await db.GCChart.objects.get_or_none(slug=path)
+  if chart is None:
+    return None
   gc_chart_service = GCChartService(db.database)
-  gc_charts = await gc_chart_service.get_charts_by_path(path)
+  gc_chart_rankings = await gc_chart_service.get_chart_rankings_for_chart(chart, format_for_frontend=True)
+  return gc_chart_rankings
+
+@app.get('/api/v1/gc_chart_children', response_model=List[schemas.GCChart])
+async def get_gc_chart_children(path: str):
+  gc_chart_service = GCChartService(db.database)
+  gc_charts = await gc_chart_service.get_chart_children(path)
   return gc_charts

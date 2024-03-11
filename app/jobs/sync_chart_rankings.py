@@ -10,7 +10,6 @@ async def sync_chart_rankings():
     for chart in await db.GCChart.objects.order_by('start_date').all():
       print("Calculating rankings for %s" % chart.slug)
       await gccs.calculate_chart_rankings(chart)
-      await gccs.calculate_chart_deltas(chart)
       i += 1
       print("Calculated %s/%s" % (i, i))
 
