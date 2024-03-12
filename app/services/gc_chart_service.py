@@ -37,6 +37,10 @@ class GCChartService:
     delta = relativedelta(end_date, start_date)
     return (start_date - delta, end_date - delta)
 
+  def get_next_range(start_date, end_date):
+    delta = relativedelta(end_date, start_date)
+    return (start_date + delta, end_date + delta)
+
   def assemble_slug(date_slug, borough, building_code_prefix):
     path = ''
     if borough:
@@ -77,6 +81,15 @@ class GCChartService:
       building_code=chart.building_code
     )
 
+  async def get_next_chart(self, chart):
+    (start_date, end_date) = GCChartService.get_next_range(chart.start_date, chart.end_date)
+    return await db.GCChart.objects.get_or_none(
+      start_date=start_date,
+      end_date=end_date,
+      borough=chart.borough,
+      building_code=chart.building_code
+    )
+
   async def upsert_chart(self, slug, start_date, end_date, borough, building_code):
     created = True
     chart = await db.GCChart.objects.get_or_none(
@@ -93,8 +106,6 @@ class GCChartService:
         borough=borough,
         building_code=building_code
       )
-    chart.parent_gc_chart_id = getattr(await self.get_parent_chart(chart), 'id', None)
-    chart.previous_gc_chart_id = getattr(await self.get_previous_chart(chart), 'id', None)    
     chart.slug=slug
     if created is False:
       await chart.save()
@@ -240,8 +251,8 @@ class GCChartService:
       ).order_by("-%s" % metric).values_list('dob_company_id')
       dob_company_ids = [str(permit_rollup[0]) for permit_rollup in gc_permit_rollups]
       deltas = [None] * len(dob_company_ids)
-      if chart.previous_gc_chart_id is not None:
-        previous_chart = await db.GCChart.objects.get(id=chart.previous_gc_chart_id)
+      previous_chart = await self.get_previous_chart(chart)
+      if previous_chart is not None:
         previous_chart_rankings = await db.GCChartRanking.objects.get_or_none(
           gc_chart_id=previous_chart.id,
           metric=metric
@@ -256,10 +267,13 @@ class GCChartService:
               deltas.append(None)
       await self.upsert_chart_ranking(chart.id, metric, dob_company_ids, deltas)
   
-  async def get_chart_rankings_for_chart(self, chart, format_for_frontend=True, ranking_limit=20):
-    rankings = await db.GCChartRanking.objects.filter(gc_chart_id=chart.id).all()
+  async def get_chart_by_slug(self, slug, format_for_frontend=False, ranking_limit=20):
+    chart = await db.GCChart.objects.get(slug=slug)
     if not format_for_frontend:
-      return rankings
+      return chart
+
+    # establish ranking
+    rankings = await db.GCChartRanking.objects.filter(gc_chart_id=chart.id).all()
     frontend_rankings = {}
     for ranking in rankings:
       entries = []
@@ -276,38 +290,30 @@ class GCChartService:
         metric=ranking.metric,
         entries=entries
       )
+
+    date_slug = chart.slug.split('/')[-1]
+    breadcrumbs = [
+      {
+        'name': 'New York City' if chart.borough is None else chart.borough,
+        'slug': GCChartService.assemble_slug(date_slug, chart.borough, None)
+      },
+      {
+        'name': 'All Buildings' if chart.building_code is None else constants.BUILDING_CODE_CATEGORIES[chart.building_code],
+        'slug': GCChartService.assemble_slug(date_slug, None, chart.building_code)
+      }
+    ]
+
+    previous_chart = await self.get_previous_chart(chart)
+    next_chart = await self.get_next_chart(chart)
+
     return schemas.GCChart(
       slug=chart.slug,
+      previous_slug=previous_chart.slug if previous_chart else None,
+      next_slug=next_chart.slug if next_chart else None,
+      breadcrumbs=breadcrumbs,
       borough=chart.borough,
       building_code=chart.building_code,
       start_date=chart.start_date,
       end_date=chart.end_date,
       rankings=frontend_rankings
     )
-  
-  async def get_children_charts_by_path(self, path, format_for_frontend=True):
-    charts = {}
-    for chart in await db.GCChart.objects.filter(path=path).all():
-      entries = []
-      dob_companies = {company.id: company for company in await db.DobCompany.objects.filter(
-        id__in=[uuid.UUID(dob_company_id) for dob_company_id in chart.dob_company_ids[0:20]]
-      ).all()}
-      for index, dob_company_id in enumerate(chart.dob_company_ids[0:20]):
-        entries.append(schemas.GCChartEntry(
-          rank=index + 1,
-          name=dob_companies[uuid.UUID(dob_company_id)].name,
-          delta=chart.deltas[index]
-        ))
-      charts[chart.metric] = schemas.GCChart(
-        slug=chart.slug,
-        path=chart.path,
-        borough=chart.borough,
-        building_code=chart.building_code,
-        start_date=chart.start_date,
-        end_date=chart.end_date,
-        metric=chart.metric,
-        entries=entries
-      )
-    return charts
-
-

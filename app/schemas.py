@@ -28,6 +28,7 @@ class GCChartRanking(BaseModel):
 
 class GCChart(BaseModel):
   slug: str
+  breadcrumbs: List[Dict[str, str]]
   title: str
   borough: Optional[str]
   building_code: Optional[str]
@@ -35,6 +36,8 @@ class GCChart(BaseModel):
   end_date: datetime.date
   date_title: str
   rankings: Optional[Dict[str, GCChartRanking]]
+  previous_slug: Optional[str]
+  next_slug: Optional[str]
 
   @root_validator(pre=True)
   def set_title(cls, values):
