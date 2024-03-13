@@ -26,11 +26,6 @@ class GCChartService:
     for quarter in range(1, 5):
       start_date = datetime.date(year, 3 * (quarter - 1) + 1, 1)
       ranges.append([start_date, start_date + relativedelta(months=+3), 'q'+str(quarter)+'-'+str(year)])
-    """
-    for month in range(1, 12):
-      start_date = datetime.date(year, month, 1)
-      ranges.append([start_date, start_date + relativedelta(months=+1), slugify(str(start_date.strftime("%B")))+'-'+str(year)])
-    """
     return ranges
   
   def get_previous_range(start_date, end_date):
@@ -42,7 +37,7 @@ class GCChartService:
     return (start_date + delta, end_date + delta)
 
   def assemble_slug(date_slug, borough, building_code_prefix):
-    path = '/%s/%s/%s' % (
+    path = '/nyc/%s/%s/%s' % (
       slugify(constants.BOROUGHS[borough]),
       slugify(constants.BUILDING_CODE_CATEGORIES[building_code_prefix]),
       date_slug
@@ -114,7 +109,7 @@ class GCChartService:
       for (start_date, end_date, date_slug) in GCChartService.get_date_ranges(year):
         for borough in constants.BOROUGHS.keys():
           for building_code_ord in constants.BUILDING_CODE_CATEGORIES.keys():
-            building_code_prefix = chr(building_code_ord) if building_code_ord else None
+            building_code_prefix = building_code_ord if building_code_ord else None
             slug = GCChartService.assemble_slug(date_slug, borough, building_code_prefix)
             chart = await self.upsert_chart(slug, start_date, end_date, borough, building_code_prefix)
             upserted_charts.append(chart)
