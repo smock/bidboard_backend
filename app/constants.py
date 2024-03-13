@@ -23,5 +23,15 @@ BUILDING_CODE_CATEGORIES = {
   'V': 'Vacant',
   'W': 'Educational',
   'Y': 'Government',
-  'Z': 'Misc.'
+  'Z': 'Misc.',
+  None: 'All Buildings'
+}
+
+BOROUGHS = {
+  None: 'All Boroughs',
+  'Bronx': 'Bronx',
+  'Brooklyn': 'Brooklyn',
+  'Manhattan': 'Manhattan',
+  'Queens': 'Queens',
+  'Staten Island': 'Staten Island'
 }

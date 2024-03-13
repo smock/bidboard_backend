@@ -42,16 +42,11 @@ class GCChartService:
     return (start_date + delta, end_date + delta)
 
   def assemble_slug(date_slug, borough, building_code_prefix):
-    path = ''
-    if borough:
-      path += '/' + slugify(borough)
-    else:
-      path += '/nyc'
-    if building_code_prefix:
-      path += '/' + slugify(constants.BUILDING_CODE_CATEGORIES[building_code_prefix])
-    else:
-      path += '/all-buildings'
-    path += '/' + date_slug
+    path = '/%s/%s/%s' % (
+      slugify(constants.BOROUGHS[borough]),
+      slugify(constants.BUILDING_CODE_CATEGORIES[building_code_prefix]),
+      date_slug
+    )
     return path
 
   async def get_parent_chart(self, chart):
@@ -117,11 +112,9 @@ class GCChartService:
     upserted_charts = []
     for year in range(GCChartService.START_YEAR, datetime.date.today().year + 1):
       for (start_date, end_date, date_slug) in GCChartService.get_date_ranges(year):
-        for borough in [None, 'Brooklyn', 'Manhattan', 'Queens', 'Bronx', 'Staten Island']:
-          for building_code_ord in [None] + list(range(ord('A'), ord('Z') + 1)):
+        for borough in constants.BOROUGHS.keys():
+          for building_code_ord in constants.BUILDING_CODE_CATEGORIES.keys():
             building_code_prefix = chr(building_code_ord) if building_code_ord else None
-            if building_code_prefix == 'X':
-              continue
             slug = GCChartService.assemble_slug(date_slug, borough, building_code_prefix)
             chart = await self.upsert_chart(slug, start_date, end_date, borough, building_code_prefix)
             upserted_charts.append(chart)
@@ -294,11 +287,11 @@ class GCChartService:
     date_slug = chart.slug.split('/')[-1]
     breadcrumbs = [
       {
-        'name': 'New York City' if chart.borough is None else chart.borough,
+        'name': constants.BOROUGHS[chart.borough],
         'slug': GCChartService.assemble_slug(date_slug, chart.borough, None)
       },
       {
-        'name': 'All Buildings' if chart.building_code is None else constants.BUILDING_CODE_CATEGORIES[chart.building_code],
+        'name': constants.BUILDING_CODE_CATEGORIES[chart.building_code],
         'slug': GCChartService.assemble_slug(date_slug, None, chart.building_code)
       }
     ]
@@ -317,3 +310,29 @@ class GCChartService:
       end_date=chart.end_date,
       rankings=frontend_rankings
     )
+
+  async def get_chart_directory(self, slug):
+    chart = await db.GCChart.objects.get(slug=slug)
+    date_slug = chart.slug.split('/')[-1]
+    directory = {}
+    directory['boroughs'] = {
+      'title': constants.BUILDING_CODE_CATEGORIES[chart.building_code],
+      'links': []
+    }
+    for borough_key, borough_value in constants.BOROUGHS.items():
+      directory['boroughs']['links'].append({
+        'name': borough_value,
+        'slug': GCChartService.assemble_slug(date_slug, borough_key, chart.building_code)
+      })
+
+    directory['buildings'] =  {
+      'title': constants.BOROUGHS[chart.borough],
+      'links': []
+    }
+    for bc_key, bc_value in constants.BUILDING_CODE_CATEGORIES.items():
+      directory['buildings']['links'].append({
+        'name': bc_value,
+        'slug': GCChartService.assemble_slug(date_slug, chart.borough, bc_key)
+      })
+    
+    return directory
