@@ -111,6 +111,13 @@ class BCBidFile(BaseModel):
   mime_type: str = ormar.String(nullable=True, max_length=100)
   images_extracted: bool = ormar.Boolean(nullable=False, default=False)
 
+class UniqueImage(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "unique_images"
+  md5_hash: str = ormar.String(nullable=False, max_length=100, unique=True)
+  local_filename: str = ormar.String(nullable=True, max_length=100, unique=True)
+  has_architectural_page_number: bool = ormar.Boolean(nullable=True)
+
 class BCBidFileImage(BaseModel):
   class Meta(BaseMeta):
     tablename = "bc_bid_file_images"
@@ -119,20 +126,19 @@ class BCBidFileImage(BaseModel):
     ]
   bc_bid_file_id: BCBidFile = ormar.ForeignKey(BCBidFile, nullable=False)
   page_number: int = ormar.Integer(nullable=False)
-  local_filename: str = ormar.String(nullable=True, max_length=100)
-  has_architectural_page_number: bool = ormar.Boolean(nullable=True)
+  unique_image_id: UniqueImage = ormar.ForeignKey(UniqueImage, nullable=False)
 
 
-class BCBidFileImageAnnotation(BaseModel):
+class UniqueImageAnnotation(BaseModel):
   class Meta(BaseMeta):
-    tablename = "bc_bid_file_image_annotations"
-  bc_bid_file_image_id: BCBidFileImage = ormar.ForeignKey(BCBidFileImage, nullable=False, unique=True)
+    tablename = "unique_image_annotations"
+  unique_image_id: UniqueImage = ormar.ForeignKey(UniqueImage, nullable=False)
   page_number: str = ormar.String(nullable=False, max_length=100)
   page_number_x1: int = ormar.Integer(nullable=False)
   page_number_y1: int = ormar.Integer(nullable=False)
   page_number_x2: int = ormar.Integer(nullable=False)
   page_number_y2: int = ormar.Integer(nullable=False)
-
+  valid: bool = ormar.Boolean(nullable=True)
 
 class DobCompany(BaseModel):
   class Meta(BaseMeta):

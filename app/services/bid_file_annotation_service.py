@@ -1,4 +1,6 @@
 import os
+import hashlib
+import io
 
 from databases import Database
 from pdf2image import convert_from_path
@@ -15,10 +17,19 @@ from app import db
 Image.MAX_IMAGE_PIXELS = None
 
 class BidFileAnnotationService:
+  LOCAL_FILENAME_PATH = '/Users/harish/data/bidboard_images'
+
   def __init__(self, db: Database):
     self.db = db
 
-  async def upsert_bid_file_image(self, bid_file, page_number, local_filename):
+  async def upsert_bid_file_image(self, bid_file, page_number, local_filename, md5_hash):
+    unique_image = await db.UniqueImage.objects.get_or_none(md5_hash=md5_hash)
+    if unique_image is None:
+      unique_image = db.UniqueImage.construct(
+        md5_hash=md5_hash,
+        local_filename=local_filename
+      )
+      await unique_image.save()
     created = True
     bid_file_image = await db.BCBidFileImage.objects.get_or_none(
       bc_bid_file_id=bid_file.id,
@@ -27,7 +38,7 @@ class BidFileAnnotationService:
     if bid_file_image is None:
       created = False
       bid_file_image = db.BCBidFileImage.construct(bc_bid_file_id=bid_file.id, page_number=page_number)
-    bid_file_image.local_filename=local_filename
+    bid_file_image.unique_image_id=unique_image.id
     if created is False:
       await bid_file_image.save()
     else:
@@ -42,19 +53,23 @@ class BidFileAnnotationService:
     if bid_file.images_extracted and not force:
       return
 
-    output_folder = os.path.join(os.path.dirname(bid_file.local_filename), 'images')
-    Path(output_folder).mkdir(parents=True, exist_ok=True)
-
     try:
       pages = convert_from_path(bid_file.local_filename, dpi=dpi)
     except PDFPageCountError:
       print("Could not extract pages from %s" % bid_file.id)
       return
+    hasher = hashlib.md5()
     for i, page in enumerate(pages):
       page_number = i + 1
-      image_path = os.path.join(output_folder, f'page_{page_number}.png')
+
+      img_byte_arr = io.BytesIO()
+      page.save(img_byte_arr, format='JPEG')  # You can choose PNG or other formats depending on the image
+      img_byte_arr = img_byte_arr.getvalue()
+      hasher.update(img_byte_arr)
+      md5_hash = hasher.hexdigest()
+      image_path = os.path.join(BidFileAnnotationService.LOCAL_FILENAME_PATH, md5_hash)
       page.save(image_path, 'PNG')
-      bid_file_image = await self.upsert_bid_file_image(bid_file, page_number, image_path)
+      await self.upsert_bid_file_image(bid_file, page_number, image_path, md5_hash)
       print(f"Saved: {image_path}")
     
     bid_file.images_extracted = True
@@ -187,7 +202,6 @@ class BidFileAnnotationService:
     right = width1 - width2 - left if width1 > width2 else 0
 
     adjusted_image2 = cv2.copyMakeBorder(scaled_image2, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0, 0, 0])
-    print(adjusted_image2.shape[:2])
     combined = np.hstack((image1, adjusted_image2))
     cv2.imshow(f'{title1} | {title2}', combined)
 
@@ -382,12 +396,12 @@ class BidFileAnnotationService:
 
   async def annotate_page_number(self, bid_file_image, force=False):
     created = True
-    annotation = await db.BCBidFileImageAnnotation.objects.get_or_none(bc_bid_file_image_id=bid_file_image.id)
+    annotation = await db.UniqueImageAnnotation.objects.get_or_none(unique_image_id=bid_file_image.id)
     if annotation is not None and not force:
       return
     if annotation is None:
       created = False
-      annotation = db.BCBidFileImageAnnotation.construct(bc_bid_file_image_id=bid_file_image.id)
+      annotation = db.UniqueImageAnnotation.construct(unique_image_id=bid_file_image.id)
 
     cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
     panels = self.identify_panels(cv2_image)
@@ -398,19 +412,36 @@ class BidFileAnnotationService:
     sidepanel = panels[-1]
     page_number_text, page_number_coordinates = self.identify_page_number_from_sidepanel(cv2_image, sidepanel)
     if page_number_text:
-      page_number_image = cv2_image[page_number_coordinates['top']:page_number_coordinates['bottom'], page_number_coordinates['left']:page_number_coordinates['right']]
-      self.display_images_side_by_side(cv2_image, "Original", page_number_image, page_number_text)
-      key = cv2.waitKey(0)
-      cv2.destroyAllWindows()
-      if key == ord('y'):
-        annotation.page_number = page_number_text
-        annotation.page_number_x1 = page_number_coordinates['left']
-        annotation.page_number_x2 = page_number_coordinates['right']
-        annotation.page_number_y1 = page_number_coordinates['top']
-        annotation.page_number_y2 = page_number_coordinates['bottom']
-        print('saving')
-        if created:
-          await annotation.update()
-        else:
-          await annotation.save()
-        return annotation
+      annotation.page_number = page_number_text
+      annotation.page_number_x1 = page_number_coordinates['left']
+      annotation.page_number_x2 = page_number_coordinates['right']
+      annotation.page_number_y1 = page_number_coordinates['top']
+      annotation.page_number_y2 = page_number_coordinates['bottom']
+      if created:
+        await annotation.update()
+      else:
+        await annotation.save()
+      return annotation
+    elif created:
+      if not annotation.valid: # protect valid annotations
+        await annotation.destroy()
+
+  async def review_annotation(self, annotation, force=False):
+    if annotation.valid is not None and not force:
+      return
+
+    bid_file_image = await db.UniqueImage.objects.get(id=annotation.unique_image_id)
+    cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
+
+    page_number_image = cv2_image[annotation.page_number_y1:annotation.page_number_y2, annotation.page_number_x1:annotation.page_number_x2]
+    self.display_images_side_by_side(cv2_image, "Original", page_number_image, annotation.page_number)
+    key = cv2.waitKey(0)
+    cv2.destroyAllWindows()
+    if key == ord('y'):
+      annotation.valid = True
+    elif key == ord('n'):
+      annotation.valid = False
+    else:
+      annotation.valid = None
+    await annotation.update()
+    return annotation
