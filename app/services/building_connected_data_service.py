@@ -96,7 +96,8 @@ class BuildingConnectedDataService:
         for chunk in response.iter_content(chunk_size=8192):  # 8K chunks
           file.write(chunk)
     else:
-        print(f"Failed to download bid file {bid_file.id} from {bid_file.download_url}. Status code: {response.status_code}")
+      print(f"Failed to download bid file {bid_file.id} from {bid_file.download_url}. Status code: {response.status_code}")
+      return
 
     bid_file.local_filename = local_filename
     bid_file.mime_type = self.mime.from_file(local_filename)

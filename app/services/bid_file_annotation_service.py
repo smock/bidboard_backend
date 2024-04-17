@@ -2,6 +2,7 @@ import os
 
 from databases import Database
 from pdf2image import convert_from_path
+from pdf2image.exceptions import PDFPageCountError
 from pathlib import Path
 import cv2
 import numpy as np
@@ -16,24 +17,6 @@ Image.MAX_IMAGE_PIXELS = None
 class BidFileAnnotationService:
   def __init__(self, db: Database):
     self.db = db
-
-  async def annotate_bid_file(self, bid_file):
-    print(bid_file.name)
-    if bid_file.local_filename is None:
-      print("Not cached")
-      return
-    if bid_file.mime_type != 'application/pdf':
-      print(bid_file.mime_type)
-      print("Not a pdf")
-      return
-    if not bid_file.images_extracted:
-      await self.extract_images(bid_file)
-    
-    for bid_file_image in await db.BCBidFileImage.objects.filter(bc_bid_file_id=bid_file.id).all():
-      if bid_file_image.has_architectural_page_number is None:
-        await self.flag_architectural_page_number(bid_file_image)
-      if bid_file_image.has_architectural_page_number:
-        await self.annotate_page_number(bid_file_image)
 
   async def upsert_bid_file_image(self, bid_file, page_number, local_filename):
     created = True
@@ -53,13 +36,20 @@ class BidFileAnnotationService:
     return bid_file_image
 
   async def extract_images(self, bid_file, dpi=300, force=False):
+    if bid_file.local_filename is None or bid_file.mime_type != 'application/pdf':
+      return
+
     if bid_file.images_extracted and not force:
       return
 
     output_folder = os.path.join(os.path.dirname(bid_file.local_filename), 'images')
     Path(output_folder).mkdir(parents=True, exist_ok=True)
 
-    pages = convert_from_path(bid_file.local_filename, dpi=dpi)
+    try:
+      pages = convert_from_path(bid_file.local_filename, dpi=dpi)
+    except PDFPageCountError:
+      print("Could not extract pages from %s" % bid_file.id)
+      return
     for i, page in enumerate(pages):
       page_number = i + 1
       image_path = os.path.join(output_folder, f'page_{page_number}.png')
@@ -78,8 +68,10 @@ class BidFileAnnotationService:
     key = cv2.waitKey(0)
     if key == ord('y'):
       bid_file_image.has_architectural_page_number = True
-    else:
+    elif key == ord('n'):
       bid_file_image.has_architectural_page_number = False
+    else:
+      bid_file_image.has_architectural_page_number = None
     print("image %s - %s" % (bid_file_image.local_filename, bid_file_image.has_architectural_page_number))
     await bid_file_image.update()
     cv2.destroyAllWindows()
@@ -180,8 +172,12 @@ class BidFileAnnotationService:
   def display_images_side_by_side(self, image1, title1, image2, title2):
     height1, width1 = image1.shape[:2]
     height2, width2 = image2.shape[:2]
-    new_height = int(height2 * width1/width2)
-    scaled_image2 = cv2.resize(image2, (width1, new_height), interpolation=cv2.INTER_LINEAR)
+    height_scale_factor = height1/height2
+    width_scale_factor = width1/width2
+    scale_factor = height_scale_factor if height_scale_factor < width_scale_factor else width_scale_factor
+    new_width = int(width2 * scale_factor)
+    new_height = int(height2 * scale_factor)
+    scaled_image2 = cv2.resize(image2, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
 
     height2, width2 = scaled_image2.shape[:2]
 
@@ -191,7 +187,7 @@ class BidFileAnnotationService:
     right = width1 - width2 - left if width1 > width2 else 0
 
     adjusted_image2 = cv2.copyMakeBorder(scaled_image2, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0, 0, 0])
-
+    print(adjusted_image2.shape[:2])
     combined = np.hstack((image1, adjusted_image2))
     cv2.imshow(f'{title1} | {title2}', combined)
 
@@ -223,6 +219,7 @@ class BidFileAnnotationService:
     return page_number_text, page_number_coordinates
 
   def identify_panels(self, cv2_image, debug=False):
+    panels = []
     height, width = cv2_image.shape[:2]
 
     # Convert to grayscale
@@ -245,7 +242,7 @@ class BidFileAnnotationService:
     lines = cv2.HoughLinesP(dilation, 1, np.pi / 180, threshold=100, minLineLength=int(width * 0.8), maxLineGap=10)
     if lines is None:
       print("could not find horizontal line candidates")
-      return
+      return panels
     horizontal_lines = []
     for line in lines:
       x1, y1, x2, y2 = line[0]
@@ -254,7 +251,7 @@ class BidFileAnnotationService:
     # Sort the horizontal lines by y coordinate
     if len(horizontal_lines) == 0:
       print("Could not extract horizontal lines")
-      return
+      return panels
     horizontal_lines = sorted(horizontal_lines, key=lambda x: x[1])
 
     vertically_bounded_dilation = None
@@ -317,7 +314,7 @@ class BidFileAnnotationService:
     #lines = cv2.HoughLinesP(vertically_bounded_dilation, 1, np.pi / 180, threshold=100, minLineLength=int(height * 0.9), maxLineGap=10)
     if lines is None:
       print("could not find vertical candidate lines")
-      return
+      return panels
 
     vertical_lines = []
     # Iterate over the points and draw the largest vertical line on the original image
@@ -329,7 +326,7 @@ class BidFileAnnotationService:
       if debug:
         print(lines)
       print("could not find vertical lines")
-      return
+      return panels
     # Sort the vertical lines by the x coordinate
     vertical_lines = sorted(vertical_lines, key=lambda x: x[0])
     if debug:
@@ -388,8 +385,6 @@ class BidFileAnnotationService:
     annotation = await db.BCBidFileImageAnnotation.objects.get_or_none(bc_bid_file_image_id=bid_file_image.id)
     if annotation is not None and not force:
       return
-    print('here')
-    print(annotation)
     if annotation is None:
       created = False
       annotation = db.BCBidFileImageAnnotation.construct(bc_bid_file_image_id=bid_file_image.id)
@@ -398,7 +393,7 @@ class BidFileAnnotationService:
     panels = self.identify_panels(cv2_image)
     if len(panels) < 2:
       print("Could not find sidepanels")
-      return
+      return None
 
     sidepanel = panels[-1]
     page_number_text, page_number_coordinates = self.identify_page_number_from_sidepanel(cv2_image, sidepanel)
