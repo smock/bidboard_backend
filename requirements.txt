@@ -13,3 +13,5 @@ python-slugify
 python-magic
 pdf2image
 opencv-python-headless
+numpy
+pytesseract

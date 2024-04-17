@@ -4,17 +4,14 @@ from databases import Database
 from pdf2image import convert_from_path
 from pathlib import Path
 import cv2
+import numpy as np
+import pytesseract
+from PIL import Image
+
 
 from app import db
 
-
-#import numpy as np
-#from PIL import Image
-#from sklearn.cluster import KMeans
-#import pytesseract
-
-
-#Image.MAX_IMAGE_PIXELS = None
+Image.MAX_IMAGE_PIXELS = None
 
 class BidFileAnnotationService:
   def __init__(self, db: Database):
@@ -35,6 +32,8 @@ class BidFileAnnotationService:
     for bid_file_image in await db.BCBidFileImage.objects.filter(bc_bid_file_id=bid_file.id).all():
       if bid_file_image.has_architectural_page_number is None:
         await self.flag_architectural_page_number(bid_file_image)
+      if bid_file_image.has_architectural_page_number:
+        await self.annotate_page_number(bid_file_image)
 
   async def upsert_bid_file_image(self, bid_file, page_number, local_filename):
     created = True
@@ -85,178 +84,7 @@ class BidFileAnnotationService:
     await bid_file_image.update()
     cv2.destroyAllWindows()
 
-  def split_floorplan(image, debug=False):
-    # To address the provided suggestions, we'll perform the following steps:
-    # 1. Use dilation to close off gaps in the boundary.
-    # 2. Use hierarchy information to find the outermost rectangle and its children.
-    # 3. Use x, y positioning to find the rightmost direct child of the outermost rectangle.
-
-    # Apply dilation to close gaps in the boundaries
-    # Convert to grayscale
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, binary_image = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV)
-    if debug:
-      cv2.imshow('binary', binary_image)
-      cv2.waitKey(0)
-      cv2.destroyAllWindows()
-
-    kernel = np.ones((10, 10), np.uint8)
-    dilation = cv2.dilate(binary_image, kernel, iterations=1)
-    if debug:
-      cv2.imshow('dilation', dilation)
-      cv2.waitKey(0)
-      cv2.destroyAllWindows()
-
-    height, width = image.shape[:2]
-
-    # first crop into the region formed by the top most and bottom most horizontal lines
-    lines = cv2.HoughLinesP(dilation, 1, np.pi / 180, threshold=100, minLineLength=int(width * 0.8), maxLineGap=10)
-    if lines is None:
-      print("could not find horizontal line candidates")
-      return
-
-    horizontal_lines = []
-    for line in lines:
-      x1, y1, x2, y2 = line[0]
-      if abs(y2 - y1) < 10: # checking if the line is horizontal
-        horizontal_lines.append((x1, y1, x2, y2))
-    # Sort the horizontal lines by y coordinate
-    if len(horizontal_lines) == 0:
-      print("Could not extract horizontal lines")
-      return
-    horizontal_lines = sorted(horizontal_lines, key=lambda x: x[1])
-
-    vertically_bounded_dilation = None
-    vertically_bounded_roi = None
-    top = None
-    bottom = None
-    for i in range(0, len(horizontal_lines) - 1):
-      _, y1, _, _ = horizontal_lines[i]
-      _, y2, _, _ = horizontal_lines[i + 1]
-      if y2 == y1+1:
-        continue
-      # Compute region of interest
-      roi = image[y1:y2,:]
-      # Check if the region is not mostly empty
-      white_pixels = cv2.countNonZero(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY))
-      total_pixels = roi.shape[0] * roi.shape[1]
-      if white_pixels < (total_pixels * 0.999):
-        if top is None:
-          top = y1
-          bottom = y2
-        else:
-          bottom = y2
-      if debug:
-        print(y1)
-        print(y2)
-        print(white_pixels)
-        print(total_pixels)
-        print(top)
-        print(bottom)
-        cv2.imshow('evaluating dilation', roi)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-    if debug:
-      print(top)
-      print(bottom)
-
-
-    # We've found our region of interest, break the loop
-    vertically_bounded_roi = image[top:bottom,:]
-    kernel = np.ones((10, 10), np.uint8)
-    vertically_bounded_dilation = cv2.dilate(binary_image[top:bottom,:], kernel, iterations=1)
-
-    height, width = vertically_bounded_roi.shape[:2]
-    if debug:
-      print('---')
-      print(top)
-      print(bottom)
-      cv2.imshow('vertically bounded dilation', vertically_bounded_dilation)
-      cv2.waitKey(0)
-      cv2.destroyAllWindows()
-
-    # Detect points that form a line
-
-    # Apply edge detection (e.g., Canny)
-    edges = cv2.Canny(vertically_bounded_dilation, 50, 150, apertureSize=3)
-    if debug:
-      cv2.imshow('edges', edges)
-      cv2.waitKey(0)
-      cv2.destroyAllWindows()
-
-    # Detect lines
-    lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi / 180, threshold=int(height * 0.8), minLineLength=100, maxLineGap=10)
-
-    #lines = cv2.HoughLinesP(vertically_bounded_dilation, 1, np.pi / 180, threshold=100, minLineLength=int(height * 0.9), maxLineGap=10)
-    if lines is None:
-      print("could not find vertical candidate lines")
-      return
-
-    vertical_lines = []
-    # Iterate over the points and draw the largest vertical line on the original image
-    for line in lines:
-      x1, y1, x2, y2 = line[0]
-      if abs(x2 - x1) < 10: # checking if the line is vertical
-        vertical_lines.append((x1, y1, x2, y2))
-    if len(vertical_lines) == 0:
-      if debug:
-        print(lines)
-      print("could not find vertical lines")
-      return
-    # Sort the vertical lines by the x coordinate
-    vertical_lines = sorted(vertical_lines, key=lambda x: x[0])
-    if debug:
-      print(vertical_lines)
-    # Now we'll look for the rightmost region between two vertical lines which isn't mostly empty
-    panels = []
-    for i in range(0, len(vertical_lines)):
-        x1, _, _, _ = vertical_lines[i]
-        # special case last line
-        if i == len(vertical_lines) - 1:
-          x2 = width
-        else:
-          x2, _, _, _ = vertical_lines[i + 1]
-        # ignore small regions ( < 5% of the width)
-        if (x2 - x1) < 0.05 * width:
-          if debug:
-            print("---")
-            print("ignoring region")
-            print(x1)
-            print(x2)
-            if x2 > x1 + 1:
-              cv2.imshow('ignoring region', vertically_bounded_roi[:, x1:x2])
-              cv2.waitKey(0)
-              cv2.destroyAllWindows()
-              print('--')
-          continue
-        # Compute region of interest
-        roi = vertically_bounded_roi[:, x1:x2]
-        white_pixels = cv2.countNonZero(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY))
-        total_pixels = roi.shape[0] * roi.shape[1]
-        # Check if the region is not mostly empty
-        if white_pixels < (total_pixels * 0.999):
-          if debug:
-            print(white_pixels)
-            print(total_pixels)
-            cv2.imshow('qualified vertical region', roi)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-          panels.append(roi)
-        else:
-          if debug:
-            cv2.imshow('unqualified vertical region', roi)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-
-
-    if debug:
-      for panel in panels:
-        cv2.imshow('panel', panel)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-    return panels
-
-  def extract_coordinates_from_ocr_result(ocr_result, idx, border_size):
+  def extract_coordinates_from_ocr_result(self, ocr_result, idx, border_size):
     return {
       'left': ocr_result['left'][idx] - border_size,
       'top': ocr_result['top'][idx] - border_size,
@@ -264,118 +92,7 @@ class BidFileAnnotationService:
       'height': ocr_result['height'][idx]
     }
 
-  def extract_scale_coordinates(binary_inverted_image, psm=12, debug=False):
-    # Get the dimensions of the image
-    _, width = binary_inverted_image.shape[:2]
-
-    # dilation to magnify scale a bit
-    kernel = np.ones((2, 2), np.uint8)
-    dilation = cv2.dilate(binary_inverted_image, kernel, iterations=1)
-    # tesseract does better with black text on white
-    reverted_dilation = cv2.bitwise_not(dilation)
-
-    border_size = width
-    bordered_image = cv2.copyMakeBorder(reverted_dilation, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT, value=[255, 255, 255])
-  
-    scale_coordinates = None
-    # Perform OCR on the cropped image
-    custom_config = "--oem 1 --psm %s" % psm
-    ocr_result = pytesseract.image_to_data(Image.fromarray(bordered_image), output_type=pytesseract.Output.DICT, config=custom_config)
-    # Initialize variables to track the largest font size and its location
-    if debug:
-      print(ocr_result)
-      cv2.imshow("scale image", bordered_image)
-      cv2.waitKey(0)
-      cv2.destroyAllWindows()
-    for i in range(len(ocr_result['text'])):
-      text = ocr_result['text'][i]
-      if text.strip().lower() == 'scale':
-        scale_coordinates = extract_coordinates_from_ocr_result(ocr_result, i, border_size)
-        break
-
-    return scale_coordinates
-
-  def extract_scale_conversion_coordinates(binary_inverted_image, scale_coordinates, psm=12, debug=False):
-    # Get the dimensions of the image
-    height, width = binary_inverted_image.shape[:2]
-    new_top = max(scale_coordinates['top'] - 3*scale_coordinates['height'], 0)
-    new_bottom = min(new_top + 7*scale_coordinates['height'], height)
-    scale_image = binary_inverted_image[
-      new_top:new_bottom,
-      0:width
-    ]
-    kernel = np.ones((2, 2), np.uint8)
-    dilation = cv2.dilate(scale_image, kernel, iterations=1)  
-    # tesseract does better with black text on white
-    reverted_dilation = cv2.bitwise_not(dilation)
-
-    border_size = scale_coordinates['height']
-    bordered_image = cv2.copyMakeBorder(reverted_dilation, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT, value=[255, 255, 255])
-    custom_config = "--oem 1 --psm %s" % psm
-    ocr_result = pytesseract.image_to_data(Image.fromarray(bordered_image), output_type=pytesseract.Output.DICT, config=custom_config)
-
-
-    block_num = None
-    line_num = None
-    for i in range(len(ocr_result['text'])):
-      text = ocr_result['text'][i]
-      if len(text.strip()) > 0 and int(ocr_result['conf'][i]) > 0 and \
-        '\'' in text or '\"' in text:
-        block_num = ocr_result['block_num'][i]
-        line_num = ocr_result['line_num'][i]
-        break
-    if block_num is None:
-      return None, None
-
-    if debug:
-      print(ocr_result)
-      print(i)
-      print(block_num)
-      print(line_num)
-      cv2.imshow('scale', bordered_image)
-      cv2.waitKey(0)
-      cv2.destroyAllWindows()
-
-    text = ''
-    coords = {}
-
-    for i in range(len(ocr_result['text'])):
-      if ocr_result['block_num'][i] != block_num or ocr_result['line_num'][i] != line_num:
-        continue
-      # start at a digit
-      if not any(char.isdigit() for char in ocr_result['text'][i]):
-        continue
-      if len(coords.keys()) == 0:
-        coords = {
-          'left': ocr_result['left'][i],
-          'top': ocr_result['top'][i],
-          'right': ocr_result['left'][i],
-          'width': ocr_result['width'][i],
-          'height': ocr_result['height'][i],
-        }
-      else:
-        if ocr_result['left'][i] < coords['left']:
-          coords['left'] = ocr_result['left'][i]
-        else:
-          coords['right'] = ocr_result['left'][i]
-          coords['width'] = ocr_result['width'][i]
-        if ocr_result['height'][i] > coords['height']:
-          coords['height'] = ocr_result['height'][i]
-      if len(text) == 0:
-        text += ' '
-      text += ocr_result['text'][i]
-    if len(coords.keys()) > 0:
-      coords = {
-        'left': coords['left'] - border_size,
-        'top': new_top + coords['top'] - border_size,
-        'width': coords['right'] - coords['left'] + coords['width'],
-        'height': coords['height']
-      }
-
-    return text, coords
-
-
-  def extract_page_number(binary_inverted_image, psm=12, debug=False):
+  def extract_page_number(self, binary_inverted_image, psm=12, debug=False):
     # Get the dimensions of the image
     _, width = binary_inverted_image.shape[:2]
 
@@ -452,7 +169,7 @@ class BidFileAnnotationService:
 
     if page_number_index:
       page_number_text = ocr_result['text'][page_number_index]
-      page_number_coordinates = extract_coordinates_from_ocr_result(
+      page_number_coordinates = self.extract_coordinates_from_ocr_result(
         ocr_result,
         page_number_index, 
         border_size
@@ -536,7 +253,7 @@ class BidFileAnnotationService:
     return lines, blank_image
 
 
-  def show_image_with_coordinates(image, coordinates, label):
+  def show_image_with_coordinates(self, image, coordinates, label):
     if coordinates:
       cropped_image = image[
         coordinates['top']:coordinates['top'] + coordinates['height'],
@@ -549,10 +266,13 @@ class BidFileAnnotationService:
     cv2.destroyAllWindows()
 
 
-  def process_sidepanel(sidepanel):
-    cv2.imshow('processing sidepanel', sidepanel)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+  def identify_page_number_from_sidepanel(self, cv2_image, panel_coords, debug=False):
+    sidepanel = cv2_image[panel_coords['top']:panel_coords['bottom'], panel_coords['left']:panel_coords['right']]
+
+    if debug:
+      cv2.imshow('processing sidepanel', sidepanel)
+      cv2.waitKey(0)
+      cv2.destroyAllWindows()
 
     height, width = sidepanel.shape[:2]
     # most of the info we want is on the bottom quarter
@@ -563,43 +283,178 @@ class BidFileAnnotationService:
     _, binary_inverted_sidepanel = cv2.threshold(sidepanel_gray, 0, 255, cv2.THRESH_BINARY_INV)
 
 
-    page_number_text, page_number_coordinates = extract_page_number(binary_inverted_sidepanel)
-    if page_number_coordinates:
-      show_image_with_coordinates(cropped_sidepanel, page_number_coordinates, page_number_text)
-    else:
-      extract_page_number(binary_inverted_sidepanel, debug=True)
-    scale_coordinates = extract_scale_coordinates(binary_inverted_sidepanel)
-    if scale_coordinates:
-      show_image_with_coordinates(cropped_sidepanel, scale_coordinates, "Scale")
-      scale_conversion_text, scale_conversion_coordinates = extract_scale_conversion_coordinates(binary_inverted_sidepanel, scale_coordinates)
-      if scale_conversion_coordinates:
-        show_image_with_coordinates(cropped_sidepanel, scale_conversion_coordinates, scale_conversion_text)
-      else:
-        extract_scale_conversion_coordinates(binary_inverted_sidepanel, scale_coordinates, debug=True)
-    else:
-      extract_scale_coordinates(binary_inverted_sidepanel, debug=True)
+    page_number_text, page_number_coordinates = self.extract_page_number(binary_inverted_sidepanel, debug=debug)
+    if page_number_coordinates and debug:
+      self.show_image_with_coordinates(cropped_sidepanel, page_number_coordinates, page_number_text)
+    #else:
+    #  extract_page_number(binary_inverted_sidepanel, debug=True)
 
+  def identify_panels(self, cv2_image, debug=False):
+    height, width = cv2_image.shape[:2]
 
-  def process_floor_maps(pdf_path, marked_up, page_num):
-    print("Converting pdf to images %s" % pdf_path)
-    output_folder = convert_pdf_to_images(pdf_path)
-
-    print(page_num)
-    
-    regex = '*.png'
-    if page_num is not None:
-      regex = '*_%s.png' % page_num
-    print(regex)
-
-    for filename in Path(output_folder).glob(regex):
-      print("Processing %s" % filename)
-      image = cv2.imread(str(filename), cv2.IMREAD_COLOR)
-      cv2.imshow("Processing %s" % filename, image)
+    # Convert to grayscale
+    gray = cv2.cvtColor(cv2_image, cv2.COLOR_BGR2GRAY)
+    _, binary_image = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV)
+    if debug:
+      cv2.imshow('binary', binary_image)
       cv2.waitKey(0)
       cv2.destroyAllWindows()
-      panels = split_floorplan(image)
-      if len(panels) < 2:
-        split_floorplan(image, debug=True)
+
+    # Apply dilation to close gaps in the boundaries
+    kernel = np.ones((10, 10), np.uint8)
+    dilation = cv2.dilate(binary_image, kernel, iterations=1)
+    if debug:
+      cv2.imshow('dilation', dilation)
+      cv2.waitKey(0)
+      cv2.destroyAllWindows()
+
+    # crop into the region formed by the top most and bottom most horizontal lines
+    lines = cv2.HoughLinesP(dilation, 1, np.pi / 180, threshold=100, minLineLength=int(width * 0.8), maxLineGap=10)
+    if lines is None:
+      print("could not find horizontal line candidates")
+      return
+    horizontal_lines = []
+    for line in lines:
+      x1, y1, x2, y2 = line[0]
+      if abs(y2 - y1) < 10: # checking if the line is horizontal
+        horizontal_lines.append((x1, y1, x2, y2))
+    # Sort the horizontal lines by y coordinate
+    if len(horizontal_lines) == 0:
+      print("Could not extract horizontal lines")
+      return
+    horizontal_lines = sorted(horizontal_lines, key=lambda x: x[1])
+
+    vertically_bounded_dilation = None
+    vertically_bounded_roi = None
+    top = None
+    bottom = None
+    for i in range(0, len(horizontal_lines) - 1):
+      _, y1, _, _ = horizontal_lines[i]
+      _, y2, _, _ = horizontal_lines[i + 1]
+      if y2 == y1+1:
         continue
-      sidepanel = panels[-1]
-      process_sidepanel(sidepanel)
+      # Compute region of interest
+      roi = cv2_image[y1:y2,:]
+      # Check if the region is not mostly empty
+      white_pixels = cv2.countNonZero(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY))
+      total_pixels = roi.shape[0] * roi.shape[1]
+      if white_pixels < (total_pixels * 0.999):
+        if top is None:
+          top = y1
+          bottom = y2
+        else:
+          bottom = y2
+      if debug:
+        print(y1)
+        print(y2)
+        print(white_pixels)
+        print(total_pixels)
+        print(top)
+        print(bottom)
+        cv2.imshow('evaluating dilation', roi)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    if debug:
+      print(top)
+      print(bottom)
+
+    # extract the region of interest
+    vertically_bounded_roi = cv2_image[top:bottom,:]
+    kernel = np.ones((10, 10), np.uint8)
+    vertically_bounded_dilation = cv2.dilate(binary_image[top:bottom,:], kernel, iterations=1)
+    height, width = vertically_bounded_roi.shape[:2]
+    if debug:
+      print('---')
+      print(top)
+      print(bottom)
+      cv2.imshow('vertically bounded dilation', vertically_bounded_dilation)
+      cv2.waitKey(0)
+      cv2.destroyAllWindows()
+
+    # Apply edge detection (e.g., Canny)
+    edges = cv2.Canny(vertically_bounded_dilation, 50, 150, apertureSize=3)
+    if debug:
+      cv2.imshow('edges', edges)
+      cv2.waitKey(0)
+      cv2.destroyAllWindows()
+
+    # Detect lines
+    lines = cv2.HoughLinesP(edges, rho=1, theta=np.pi / 180, threshold=int(height * 0.8), minLineLength=100, maxLineGap=10)
+
+    #lines = cv2.HoughLinesP(vertically_bounded_dilation, 1, np.pi / 180, threshold=100, minLineLength=int(height * 0.9), maxLineGap=10)
+    if lines is None:
+      print("could not find vertical candidate lines")
+      return
+
+    vertical_lines = []
+    # Iterate over the points and draw the largest vertical line on the original image
+    for line in lines:
+      x1, y1, x2, y2 = line[0]
+      if abs(x2 - x1) < 10: # checking if the line is vertical
+        vertical_lines.append((x1, y1, x2, y2))
+    if len(vertical_lines) == 0:
+      if debug:
+        print(lines)
+      print("could not find vertical lines")
+      return
+    # Sort the vertical lines by the x coordinate
+    vertical_lines = sorted(vertical_lines, key=lambda x: x[0])
+    if debug:
+      print(vertical_lines)
+    # Now we'll look for the rightmost region between two vertical lines which isn't mostly empty
+    panels = []
+    for i in range(0, len(vertical_lines)):
+        x1, _, _, _ = vertical_lines[i]
+        # special case last line
+        if i == len(vertical_lines) - 1:
+          x2 = width
+        else:
+          x2, _, _, _ = vertical_lines[i + 1]
+        # ignore small regions ( < 5% of the width)
+        if (x2 - x1) < 0.05 * width:
+          if debug:
+            print("---")
+            print("ignoring region")
+            print(x1)
+            print(x2)
+            if x2 > x1 + 1:
+              cv2.imshow('ignoring region', vertically_bounded_roi[:, x1:x2])
+              cv2.waitKey(0)
+              cv2.destroyAllWindows()
+              print('--')
+          continue
+        # Compute region of interest
+        roi = vertically_bounded_roi[:, x1:x2]
+        white_pixels = cv2.countNonZero(cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY))
+        total_pixels = roi.shape[0] * roi.shape[1]
+        # Check if the region is not mostly empty
+        if white_pixels < (total_pixels * 0.999):
+          if debug:
+            print(white_pixels)
+            print(total_pixels)
+            cv2.imshow('qualified vertical region', roi)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+          panels.append({'left': x1, 'right': x2, 'top': top, 'bottom': bottom})
+        else:
+          if debug:
+            cv2.imshow('unqualified vertical region', roi)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+
+    if debug:
+      for panel in panels:
+        panel_image = cv2_image[panel['top']:panel['bottom'], panel['left']:panel['right']]
+        cv2.imshow('panel', panel_image)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
+    return panels
+
+  async def annotate_page_number(self, bid_file_image):
+    cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
+    panels = self.identify_panels(cv2_image)
+    if len(panels) < 2:
+      print("Could not find sidepanels")
+      return
+    sidepanel = panels[-1]
+    self.identify_page_number_from_sidepanel(cv2_image, sidepanel, debug=True)
