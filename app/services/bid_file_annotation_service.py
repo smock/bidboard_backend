@@ -88,8 +88,8 @@ class BidFileAnnotationService:
     return {
       'left': ocr_result['left'][idx] - border_size,
       'top': ocr_result['top'][idx] - border_size,
-      'width': ocr_result['width'][idx],
-      'height': ocr_result['height'][idx]
+      'right': ocr_result['left'][idx] - border_size + ocr_result['width'][idx],
+      'bottom': ocr_result['top'][idx] - border_size + ocr_result['height'][idx]
     }
 
   def extract_page_number(self, binary_inverted_image, psm=12, debug=False):
@@ -176,94 +176,24 @@ class BidFileAnnotationService:
       )
     return page_number_text, page_number_coordinates
 
-  def display_images_side_by_side(image1, image2, step):
-    title1 = "%s - Before" % step
-    title2 = "%s - After" % step
-    combined = np.hstack((image1, image2))
+
+  def display_images_side_by_side(self, image1, title1, image2, title2):
+    height1, width1 = image1.shape[:2]
+    height2, width2 = image2.shape[:2]
+    new_height = int(height2 * width1/width2)
+    scaled_image2 = cv2.resize(image2, (width1, new_height), interpolation=cv2.INTER_LINEAR)
+
+    height2, width2 = scaled_image2.shape[:2]
+
+    top = (height1 - height2) // 2 if height1 > height2 else 0
+    bottom = height1 - height2 - top if height1 > height2 else 0
+    left = (width1 - width2) // 2 if width1 > width2 else 0
+    right = width1 - width2 - left if width1 > width2 else 0
+
+    adjusted_image2 = cv2.copyMakeBorder(scaled_image2, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0, 0, 0])
+
+    combined = np.hstack((image1, adjusted_image2))
     cv2.imshow(f'{title1} | {title2}', combined)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-
-  def extract_edges(image, debug=False):
-    # grayscale the image
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, binary_image = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY)
-    if debug:
-      display_images_side_by_side(gray, binary_image, "Thresholding")
-
-    # Define a kernel for dilation; you might need to adjust the size and shape
-    kernel = np.ones((30, 30), np.uint8)  # A 3x3 square kernel
-
-    # Apply dilation to connect dashed line segments
-    dilated_image = cv2.dilate(binary_image, kernel, iterations=1)
-    if debug:
-      display_images_side_by_side(binary_image, dilated_image, "Dilation")
-
-    contours, _ = cv2.findContours(dilated_image.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    # Create a mask to draw the open-ended line segments (initially all ones - include everything)
-    mask = np.ones_like(dilated_image)
-
-    # Analyze each contour
-    for cnt in contours:
-      # Approximate the contour to reduce the number of points
-      epsilon = 0.01 * cv2.arcLength(cnt, True)
-      approx = cv2.approxPolyDP(cnt, epsilon, True)
-
-      # Check if the contour is closed (if it's convex or if approximated contour has same length as the perimeter)
-      if cv2.isContourConvex(approx) or len(approx) == int(cv2.arcLength(cnt, True)):
-        # If closed, draw it on the mask with 0 (exclude it)
-        cv2.drawContours(mask, [cnt], -1, 0, thickness=cv2.FILLED)
-
-    # Apply the mask to the dilated image
-    filtered_image = cv2.bitwise_and(dilated_image, dilated_image, mask=mask)
-    if debug:
-      display_images_side_by_side(dilated_image, filtered_image, "Contour Mask")
-
-    filtered_original_image = cv2.bitwise_and(image, image, mask=mask)
-    if debug:
-      display_images_side_by_side(image, filtered_original_image, "Applied Contour Mask")
-    return filtered_original_image
-
-
-  def extract_lines(image, debug=False):
-    # Apply Canny Edge Detector
-    edges = cv2.Canny(image, 50, 150)
-    # Detect lines using Hough Transform
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=50, minLineLength=10, maxLineGap=250)
-    if lines is None:
-      return None, None
-
-    endpoints = []
-    if lines is not None:
-      for line in lines:
-        x1, y1, x2, y2 = line[0]
-        endpoints.append(((x1, y1), (x2, y2)))
-
-    # Now `endpoints` contains tuples of line endpoints: ((x1, y1), (x2, y2))
-    blank_image = np.zeros(image.shape[:3], dtype=np.uint8)
-    for line in lines:
-      x1, y1, x2, y2 = line[0]
-      cv2.line(blank_image, (x1, y1), (x2, y2), (255, 255, 255), 2)
-
-    if debug:
-      display_images_side_by_side(image, blank_image, "Line detection")
-
-    return lines, blank_image
-
-
-  def show_image_with_coordinates(self, image, coordinates, label):
-    if coordinates:
-      cropped_image = image[
-        coordinates['top']:coordinates['top'] + coordinates['height'],
-        coordinates['left']:coordinates['left'] + coordinates['width']
-      ]
-      cv2.imshow(label, cropped_image)
-    else:
-      cv2.imshow(label, image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
 
 
   def identify_page_number_from_sidepanel(self, cv2_image, panel_coords, debug=False):
@@ -282,12 +212,15 @@ class BidFileAnnotationService:
     # Apply a binary threshold to get a binary inverted image
     _, binary_inverted_sidepanel = cv2.threshold(sidepanel_gray, 0, 255, cv2.THRESH_BINARY_INV)
 
-
     page_number_text, page_number_coordinates = self.extract_page_number(binary_inverted_sidepanel, debug=debug)
-    if page_number_coordinates and debug:
-      self.show_image_with_coordinates(cropped_sidepanel, page_number_coordinates, page_number_text)
-    #else:
-    #  extract_page_number(binary_inverted_sidepanel, debug=True)
+    if page_number_coordinates:
+      page_number_coordinates = {
+        'left': page_number_coordinates['left'] + panel_coords['left'],
+        'right': page_number_coordinates['right'] + panel_coords['left'],
+        'top': page_number_coordinates['top'] + panel_coords['top'] + int(3 * height/4),
+        'bottom': page_number_coordinates['bottom'] + panel_coords['top'] + int(3 * height/4)
+      }
+    return page_number_text, page_number_coordinates
 
   def identify_panels(self, cv2_image, debug=False):
     height, width = cv2_image.shape[:2]
@@ -450,11 +383,39 @@ class BidFileAnnotationService:
         cv2.destroyAllWindows()
     return panels
 
-  async def annotate_page_number(self, bid_file_image):
+  async def annotate_page_number(self, bid_file_image, force=False):
+    created = True
+    annotation = await db.BCBidFileImageAnnotation.objects.get_or_none(bc_bid_file_image_id=bid_file_image.id)
+    if annotation is not None and not force:
+      return
+    print('here')
+    print(annotation)
+    if annotation is None:
+      created = False
+      annotation = db.BCBidFileImageAnnotation.construct(bc_bid_file_image_id=bid_file_image.id)
+
     cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
     panels = self.identify_panels(cv2_image)
     if len(panels) < 2:
       print("Could not find sidepanels")
       return
+
     sidepanel = panels[-1]
-    self.identify_page_number_from_sidepanel(cv2_image, sidepanel, debug=True)
+    page_number_text, page_number_coordinates = self.identify_page_number_from_sidepanel(cv2_image, sidepanel)
+    if page_number_text:
+      page_number_image = cv2_image[page_number_coordinates['top']:page_number_coordinates['bottom'], page_number_coordinates['left']:page_number_coordinates['right']]
+      self.display_images_side_by_side(cv2_image, "Original", page_number_image, page_number_text)
+      key = cv2.waitKey(0)
+      cv2.destroyAllWindows()
+      if key == ord('y'):
+        annotation.page_number = page_number_text
+        annotation.page_number_x1 = page_number_coordinates['left']
+        annotation.page_number_x2 = page_number_coordinates['right']
+        annotation.page_number_y1 = page_number_coordinates['top']
+        annotation.page_number_y2 = page_number_coordinates['bottom']
+        print('saving')
+        if created:
+          await annotation.update()
+        else:
+          await annotation.save()
+        return annotation

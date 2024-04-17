@@ -128,10 +128,10 @@ class BCBidFileImageAnnotation(BaseModel):
     tablename = "bc_bid_file_image_annotations"
   bc_bid_file_image_id: BCBidFileImage = ormar.ForeignKey(BCBidFileImage, nullable=False, unique=True)
   page_number: str = ormar.String(nullable=False, max_length=100)
-  page_number_x: int = ormar.Integer(nullable=False)
-  page_number_y: int = ormar.Integer(nullable=False)
-  page_number_w: int = ormar.Integer(nullable=False)
-  page_number_h: int = ormar.Integer(nullable=False)
+  page_number_x1: int = ormar.Integer(nullable=False)
+  page_number_y1: int = ormar.Integer(nullable=False)
+  page_number_x2: int = ormar.Integer(nullable=False)
+  page_number_y2: int = ormar.Integer(nullable=False)
 
 
 class DobCompany(BaseModel):
