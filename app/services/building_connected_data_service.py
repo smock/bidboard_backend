@@ -1,9 +1,12 @@
 import requests
 from databases import Database
 from dateutil import parser
+from pathlib import Path
 
 from app.config import settings
 from app import db
+
+import magic
 
 
 class BuildingConnectedDataService:
@@ -11,11 +14,14 @@ class BuildingConnectedDataService:
   EMAIL_API_ENDPOINT = 'https://app.buildingconnected.com/api/sso/status/login'
   LOGIN_API_ENDPOINT = 'https://app.buildingconnected.com/api/sessions'
   OPPORTUNITIES_API_ENDPONT = 'https://app.buildingconnected.com/api/opportunities/v2/pipeline'
-
+  LOCAL_FILENAME_PATH = '/Users/harish/data/bidboard' 
+ 
   def __init__(self, db: Database, company: db.Company):
     self.db = db
     self.company = company
     self.session = None
+    self.mime = magic.Magic(mime=True)
+
   
   def init_session(self):
     self.session = requests.Session()
@@ -68,13 +74,82 @@ class BuildingConnectedDataService:
       await bid.save()
     else:
       await bid.update()
+    
+    await self.sync_bid_files(bid)
+
     return bid
+
+  async def cache_bid_file(self, bid_file, force=False):
+    if bid_file.local_filename is not None and not force:
+      return bid_file
+
+    output_folder = "%s/%s" % (BuildingConnectedDataService.LOCAL_FILENAME_PATH, bid_file.id)
+    Path(output_folder).mkdir(parents=True, exist_ok=True)
+
+    local_filename = "%s/source_file" % output_folder
+
+    # Stream the download to handle large files without consuming too much memory
+    response = self.session.get("https://app.buildingconnected.com/%s" % bid_file.download_url, stream=True)
+    # Check if the request was successful
+    if response.status_code == 200:
+      with open(local_filename, 'wb') as file:
+        for chunk in response.iter_content(chunk_size=8192):  # 8K chunks
+          file.write(chunk)
+    else:
+        print(f"Failed to download bid file {bid_file.id} from {bid_file.download_url}. Status code: {response.status_code}")
+
+    bid_file.local_filename = local_filename
+    bid_file.mime_type = self.mime.from_file(local_filename)
+    await bid_file.update()
+    return bid_file
+  
+  async def upsert_bid_file(self, bid, file_dict, parent_folder=None):
+    created = True
+    file = await db.BCBidFile.objects.get_or_none(
+      bc_bid_id=bid.id,
+      bc_id=file_dict['_id']
+    )
+    if file is None:
+      created = False
+      file = db.BCBidFile.construct(bc_bid_id=bid.id, bc_id=file_dict['_id'])
+    file.data = file_dict
+    file.name = file_dict['name']
+    file.file_system_type = db.BCBidFileSystemType[file_dict['type']].value
+    file.download_url = file_dict['downloadUrl'] if 'downloadUrl' in file_dict.keys() else None
+    file.date_created = parser.parse(file_dict['dateCreated']).replace(tzinfo=None) if file_dict.get('dateCreated', None) is not None else None
+    file.date_modified = parser.parse(file_dict['dateModified']).replace(tzinfo=None) if file_dict.get('dateModified', None) is not None else None
+    if parent_folder is not None:
+      file.parent_folder_id = str(parent_folder.id)
+    if created is False:
+      await file.save()
+    else:
+      await file.update()
+    return file
+
+  async def sync_bid_files(self, bid, parent_folder=None):
+    bc_id = bid.bc_id
+    endpoint = "https://app.buildingconnected.com/api/opportunities/%s/files" % bc_id
+    if parent_folder is not None:
+      endpoint += '/%s' % parent_folder.bc_id
+    response = self.session.get(endpoint)
+    if response.status_code == 403:
+      return
+    items = response.json()['items']
+    for item in items:
+      try:
+        file = await self.upsert_bid_file(bid, item, parent_folder)
+      except:
+        print(item)
+        raise
+      if item['type'] == 'FOLDER':
+        await self.sync_bid_files(bid, file)
 
   async def sync_bids(self):
     self.init_session()
-    for archive_state in ['ARCHIVED_ONLY', 'ACTIVE_ONLY']:
+    for archive_state in ['ACTIVE_ONLY']:#['ARCHIVED_ONLY', 'ACTIVE_ONLY']:
       for workflow_state in db.BCBidStatus:
         startIndex = 0
+        print("Syncing %s - %s bids, index %s" % (archive_state, workflow_state, startIndex))
         while True:
           response = self.session.get(BuildingConnectedDataService.OPPORTUNITIES_API_ENDPONT, params={
             'startIndex': startIndex,
@@ -89,7 +164,7 @@ class BuildingConnectedDataService:
           if len(results) == 0:
             break
           for bid in results:
-            await self.upsert_bid(bid)
+            bid_row = await self.upsert_bid(bid)
           startIndex += len(results)
 
   async def parse_bids(self):

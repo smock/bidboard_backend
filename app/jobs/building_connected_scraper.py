@@ -17,10 +17,15 @@ async def parse_bids(company):
     bcds = BuildingConnectedDataService(db.database, company)
     await bcds.parse_bids()
 
+async def sync_bids(company):
+  async with db.database:
+    bcds = BuildingConnectedDataService(db.database, company)
+    await bcds.sync_bids()
+
 if __name__ == '__main__':
   import sys
 
   company = asyncio.run(get_or_create_company('Tristate Plumbing'))
-  asyncio.run(parse_bids(company))
+  asyncio.run(sync_bids(company))
 
   sys.exit()

@@ -88,6 +88,52 @@ class BCBid(BaseModel):
   is_archived: bool = ormar.Boolean(nullable=False)
   data: dict = ormar.JSON(nullable=False)
 
+class BCBidFileSystemType(Enum):
+  FOLDER = 0
+  FILE = 1
+
+class BCBidFile(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "bc_bid_files"
+    constraints = [
+      sqlalchemy.UniqueConstraint('bc_bid_id', 'bc_id')
+    ]
+  bc_bid_id: BCBid = ormar.ForeignKey(BCBid, nullable=False)
+  bc_id: str = ormar.String(max_length=24, nullable=False)
+  file_system_type: int = ormar.Integer(nullable=False, choices=list(BCBidFileSystemType))
+  name: str = ormar.Text(nullable=False)
+  download_url: str = ormar.Text(nullable=True)
+  date_created: datetime.datetime = ormar.DateTime(nullable=True)
+  date_modified: datetime.datetime = ormar.DateTime(nullable=True)
+  parent_folder_id: str = ormar.String(max_length=36, nullable=True)
+  data: dict = ormar.JSON(nullable=False)
+  local_filename: str = ormar.String(nullable=True, max_length=100)
+  mime_type: str = ormar.String(nullable=True, max_length=100)
+  images_extracted: bool = ormar.Boolean(nullable=False, default=False)
+
+class BCBidFileImage(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "bc_bid_file_images"
+    constraints = [
+      sqlalchemy.UniqueConstraint('bc_bid_file_id', 'page_number')
+    ]
+  bc_bid_file_id: BCBidFile = ormar.ForeignKey(BCBidFile, nullable=False)
+  page_number: int = ormar.Integer(nullable=False)
+  local_filename: str = ormar.String(nullable=True, max_length=100)
+  has_architectural_page_number: bool = ormar.Boolean(nullable=True)
+
+
+class BCBidFileImageAnnotation(BaseModel):
+  class Meta(BaseMeta):
+    tablename = "bc_bid_file_image_annotations"
+  bc_bid_file_image_id: BCBidFileImage = ormar.ForeignKey(BCBidFileImage, nullable=False, unique=True)
+  page_number: str = ormar.String(nullable=False, max_length=100)
+  page_number_x: int = ormar.Integer(nullable=False)
+  page_number_y: int = ormar.Integer(nullable=False)
+  page_number_w: int = ormar.Integer(nullable=False)
+  page_number_h: int = ormar.Integer(nullable=False)
+
+
 class DobCompany(BaseModel):
   class Meta(BaseMeta):
     tablename = "dob_companies"

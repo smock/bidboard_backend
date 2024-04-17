@@ -10,3 +10,6 @@ python-dotenv
 alembic
 python-dateutil
 python-slugify
+python-magic
+pdf2image
+opencv-python-headless
