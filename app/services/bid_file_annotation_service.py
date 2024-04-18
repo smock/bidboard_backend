@@ -13,7 +13,7 @@ import pytesseract
 from PIL import Image
 import qasync
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
-from PyQt5.QtGui import QPixmap, QPainter, QPen
+from PyQt5.QtGui import QPixmap, QPainter, QPen, QImage
 from PyQt5.QtCore import Qt, QPoint, QTimer, QRect
 
 from app import db
@@ -21,64 +21,93 @@ from app import db
 Image.MAX_IMAGE_PIXELS = None
 
 class BoundingBoxApp(QWidget):
-    def __init__(self, imagePath):
-        super().__init__()
-        self.imagePath = imagePath
-        self.initUI()
+  def __init__(self, imageArray):
+    super().__init__()
+    self.imageArray = imageArray
+    self.initUI()
 
-    def initUI(self):
-        self.setWindowTitle("Bounding Box Drawer")
-        self.setGeometry(100, 100, 800, 600)
+  def initUI(self):
+    self.setWindowTitle("Bounding Box Drawer")
+    self.setGeometry(100, 100, 800, 600)
 
-        self.layout = QVBoxLayout()
-        self.imageLabel = QLabel(self)
-        self.imageLabel.setAlignment(Qt.AlignCenter)
-        self.layout.addWidget(self.imageLabel)
-        self.setLayout(self.layout)
-        QTimer.singleShot(100, self.loadImage)  # Load image after everything is initialized
+    self.layout = QVBoxLayout()
+    self.imageLabel = QLabel(self)
+    self.imageLabel.setAlignment(Qt.AlignCenter)
+    self.layout.addWidget(self.imageLabel)
+    self.setLayout(self.layout)
+    QTimer.singleShot(100, self.loadImage)  # Load image after everything is initialized
 
-    def loadImage(self):
-        self.pixmap = QPixmap(self.imagePath)
-        self.scaledPixmap = self.pixmap.scaled(self.imageLabel.size(), Qt.KeepAspectRatio)
-        self.imageLabel.setPixmap(self.scaledPixmap)
-        self.imageLabel.setContentsMargins(0, 0, 0, 0)  # No margins
-        self.imageLabel.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # Align to the top left
+  def loadImage(self):
+    height, width, channel = self.imageArray.shape
+    bytesPerLine = 3 * width
+    qImg = QImage(self.imageArray.tobytes(), width, height, bytesPerLine, QImage.Format_RGB888).rgbSwapped()
+    self.pixmap = QPixmap.fromImage(qImg)
+    self.scaledPixmap = self.pixmap.scaled(self.imageLabel.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
 
-        # Initializing drawing state
-        self.startPoint = QPoint()
-        self.endPoint = QPoint()
-        self.drawing = False
+    # Calculate scale factors
+    self.scaleW = self.pixmap.width() / self.scaledPixmap.width()
+    self.scaleH = self.pixmap.height() / self.scaledPixmap.height()
 
-        # Connect mouse events
-        self.imageLabel.mousePressEvent = self.mousePressEvent
-        self.imageLabel.mouseMoveEvent = self.mouseMoveEvent
-        self.imageLabel.mouseReleaseEvent = self.mouseReleaseEvent
+    self.imageLabel.setPixmap(self.scaledPixmap)
+    self.imageLabel.setContentsMargins(0, 0, 0, 0)  # No margins
+    self.imageLabel.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # Align to the top left
 
-    def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.drawing = True
-            self.startPoint = event.pos()
-            self.endPoint = event.pos()  # Initialize endPoint to be the start to ensure proper rectangle drawing
+    # Initializing drawing state
+    self.startPoint = QPoint()
+    self.endPoint = QPoint()
+    self.drawing = False
 
-    def mouseMoveEvent(self, event):
-        if event.buttons() & Qt.LeftButton and self.drawing:
-            self.endPoint = event.pos()
-            self.updateDrawing()
+    # Connect mouse events
+    self.imageLabel.mousePressEvent = self.mousePressEvent
+    self.imageLabel.mouseMoveEvent = self.mouseMoveEvent
+    self.imageLabel.mouseReleaseEvent = self.mouseReleaseEvent
 
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self.drawing = False
-            self.endPoint = event.pos()
-            self.updateDrawing()
+    self.cancelled = False
 
-    def updateDrawing(self):
-        tempPixmap = self.scaledPixmap.copy()
-        painter = QPainter(tempPixmap)
-        pen = QPen(Qt.red, 2, Qt.SolidLine)
-        painter.setPen(pen)
-        rect = QRect(self.startPoint, self.endPoint)
-        painter.drawRect(rect)
-        self.imageLabel.setPixmap(tempPixmap)
+  def getBoundingBoxCoords(self):
+    if self.cancelled:
+      return None
+    origX1 = int(min([self.startPoint.x(), self.endPoint.x()]) * self.scaleW)
+    origY1 = int(min([self.startPoint.y(), self.endPoint.y()]) * self.scaleH)
+    origX2 = int(max([self.startPoint.x(), self.endPoint.x()]) * self.scaleW)
+    origY2 = int(max([self.startPoint.y(), self.endPoint.y()]) * self.scaleH)
+    print(self.scaleH)
+    print(self.startPoint.y())
+    return (origX1, origY1, origX2, origY2)
+
+  def mousePressEvent(self, event):
+    if event.button() == Qt.LeftButton:
+      self.drawing = True
+      self.startPoint = event.pos()
+      self.endPoint = event.pos()
+
+  def mouseMoveEvent(self, event):
+    if event.buttons() & Qt.LeftButton and self.drawing:
+      self.endPoint = event.pos()
+      self.updateDrawing()
+
+  def mouseReleaseEvent(self, event):
+    if event.button() == Qt.LeftButton:
+      self.drawing = False
+      self.endPoint = event.pos()
+      self.updateDrawing()
+
+  def keyPressEvent(self, event):
+    key = event.key()
+    if key in (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter):
+      if key == Qt.Key_Escape:
+        self.cancelled = True
+      self.close()
+
+  def updateDrawing(self):
+    tempPixmap = self.scaledPixmap.copy()
+    painter = QPainter(tempPixmap)
+    pen = QPen(Qt.red, 2, Qt.SolidLine)
+    painter.setPen(pen)
+    rect = QRect(self.startPoint, self.endPoint)
+    painter.drawRect(rect)
+    painter.end()
+    self.imageLabel.setPixmap(tempPixmap)
 
 class BidFileAnnotationService:
   LOCAL_FILENAME_PATH = '/Users/harish/data/bidboard_images'
@@ -254,6 +283,42 @@ class BidFileAnnotationService:
         border_size
       )
     return page_number_text, page_number_coordinates
+  
+  def extract_page_number_from_roi(self, roi, debug=False):
+    roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    # Apply a binary threshold to get a binary inverted image
+    _, binary_inverted_image = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV)
+
+    # Get the dimensions of the image
+    _, width = binary_inverted_image.shape[:2]
+
+    kernel = np.ones((3, 3), np.uint8)
+    dilation = cv2.dilate(binary_inverted_image, kernel, iterations=1)
+    reverted_dilation = cv2.bitwise_not(dilation)
+
+    border_size = width
+    bordered_image = cv2.copyMakeBorder(reverted_dilation, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT, value=[255, 255, 255])
+
+    page_number_text = None
+    page_number_coordinates = None
+    # Perform OCR on the cropped image
+    custom_config = "--oem 1 --psm 7"
+    ocr_result = pytesseract.image_to_data(Image.fromarray(bordered_image), output_type=pytesseract.Output.DICT, config=custom_config)
+    
+    bordered_height, bordered_width = bordered_image.shape[:2]
+    # Initialize variables to track the largest font size and its location
+    # Find the Largest Font Sized Text
+    if debug:
+      print(ocr_result)
+      cv2.imshow("page num bordered image", bordered_image)
+      cv2.waitKey(0)
+      cv2.destroyAllWindows()
+
+    print(ocr_result)
+    if len(ocr_result['text']) == 0:
+      return
+
+    return ' '.join(ocr_result['text']).strip()
 
 
   def display_images_side_by_side(self, image1, title1, image2, title2):
@@ -504,37 +569,47 @@ class BidFileAnnotationService:
     if annotation is not None:
       return
     annotation = db.UniqueImageAnnotation.construct(unique_image_id=bid_file_image.id)
+
+    cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
+    panels = self.identify_panels(cv2_image)
+    if len(panels) >= 2:
+      panel_coords = panels[-1]
+    else:
+      panel_coords = {
+        'left':0,
+        'top':0,
+        'right':cv2_image.shape[1] - 1,
+        'bottom':cv2_image.shape[0] - 1
+      }
+
     app = QApplication([])
-    #loop = qasync.QEventLoop(app)
-    #asyncio.set_event_loop(loop)
-    viewer = BoundingBoxApp(bid_file_image.local_filename)  # Specify the image path
+    viewer = BoundingBoxApp(cv2_image[panel_coords['top']:panel_coords['bottom'], panel_coords['left']:panel_coords['right']])
     viewer.show()
     app.exec_()
-    #await loop.run_forever()
-    return
+    coords = viewer.getBoundingBoxCoords()
+    if coords is None:
+      return
 
+    x1, y1, x2, y2 = coords
+    x1 += panel_coords['left']
+    x2 += panel_coords['left']
+    y1 += panel_coords['top']
+    y2 += panel_coords['top']
+    roi = cv2_image[y1:y2, x1:x2]
+    page_number_text = self.extract_page_number_from_roi(roi, debug=True)
+    if not page_number_text:
+      return False
 
-    panels = self.identify_panels(cv2_image)
-    if len(panels) < 2:
-      print("Could not find sidepanels")
-      return None
-
-    sidepanel = panels[-1]
-    page_number_text, page_number_coordinates = self.identify_page_number_from_sidepanel(cv2_image, sidepanel)
-    if page_number_text:
-      annotation.page_number = page_number_text
-      annotation.page_number_x1 = page_number_coordinates['left']
-      annotation.page_number_x2 = page_number_coordinates['right']
-      annotation.page_number_y1 = page_number_coordinates['top']
-      annotation.page_number_y2 = page_number_coordinates['bottom']
-      if created:
-        await annotation.update()
-      else:
-        await annotation.save()
-      return annotation
-    elif created:
-      if not annotation.valid: # protect valid annotations
-        await annotation.destroy()
+    annotation.page_number = page_number_text
+    annotation.page_number_x1 = x1
+    annotation.page_number_x2 = x2
+    annotation.page_number_y1 = y1
+    annotation.page_number_y2 = y2
+    annotation.valid = None
+    await annotation.save()
+    await self.review_annotation(annotation)
+    
+    return annotation
 
   async def review_annotation(self, annotation, force=False):
     if annotation.valid is not None and not force:
