@@ -15,3 +15,7 @@ pdf2image
 opencv-python-headless
 numpy
 pytesseract
+tensorflow
+sklearn
+pyqt5
+qasync

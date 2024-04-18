@@ -132,7 +132,7 @@ class BCBidFileImage(BaseModel):
 class UniqueImageAnnotation(BaseModel):
   class Meta(BaseMeta):
     tablename = "unique_image_annotations"
-  unique_image_id: UniqueImage = ormar.ForeignKey(UniqueImage, nullable=False)
+  unique_image_id: UniqueImage = ormar.ForeignKey(UniqueImage, nullable=False, related_name='unique_image_annotations')
   page_number: str = ormar.String(nullable=False, max_length=100)
   page_number_x1: int = ormar.Integer(nullable=False)
   page_number_y1: int = ormar.Integer(nullable=False)

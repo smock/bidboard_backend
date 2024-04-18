@@ -1,3 +1,4 @@
+import asyncio
 import os
 import hashlib
 import io
@@ -10,11 +11,74 @@ import cv2
 import numpy as np
 import pytesseract
 from PIL import Image
-
+import qasync
+from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
+from PyQt5.QtGui import QPixmap, QPainter, QPen
+from PyQt5.QtCore import Qt, QPoint, QTimer, QRect
 
 from app import db
 
 Image.MAX_IMAGE_PIXELS = None
+
+class BoundingBoxApp(QWidget):
+    def __init__(self, imagePath):
+        super().__init__()
+        self.imagePath = imagePath
+        self.initUI()
+
+    def initUI(self):
+        self.setWindowTitle("Bounding Box Drawer")
+        self.setGeometry(100, 100, 800, 600)
+
+        self.layout = QVBoxLayout()
+        self.imageLabel = QLabel(self)
+        self.imageLabel.setAlignment(Qt.AlignCenter)
+        self.layout.addWidget(self.imageLabel)
+        self.setLayout(self.layout)
+        QTimer.singleShot(100, self.loadImage)  # Load image after everything is initialized
+
+    def loadImage(self):
+        self.pixmap = QPixmap(self.imagePath)
+        self.scaledPixmap = self.pixmap.scaled(self.imageLabel.size(), Qt.KeepAspectRatio)
+        self.imageLabel.setPixmap(self.scaledPixmap)
+        self.imageLabel.setContentsMargins(0, 0, 0, 0)  # No margins
+        self.imageLabel.setAlignment(Qt.AlignTop | Qt.AlignLeft)  # Align to the top left
+
+        # Initializing drawing state
+        self.startPoint = QPoint()
+        self.endPoint = QPoint()
+        self.drawing = False
+
+        # Connect mouse events
+        self.imageLabel.mousePressEvent = self.mousePressEvent
+        self.imageLabel.mouseMoveEvent = self.mouseMoveEvent
+        self.imageLabel.mouseReleaseEvent = self.mouseReleaseEvent
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drawing = True
+            self.startPoint = event.pos()
+            self.endPoint = event.pos()  # Initialize endPoint to be the start to ensure proper rectangle drawing
+
+    def mouseMoveEvent(self, event):
+        if event.buttons() & Qt.LeftButton and self.drawing:
+            self.endPoint = event.pos()
+            self.updateDrawing()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.drawing = False
+            self.endPoint = event.pos()
+            self.updateDrawing()
+
+    def updateDrawing(self):
+        tempPixmap = self.scaledPixmap.copy()
+        painter = QPainter(tempPixmap)
+        pen = QPen(Qt.red, 2, Qt.SolidLine)
+        painter.setPen(pen)
+        rect = QRect(self.startPoint, self.endPoint)
+        painter.drawRect(rect)
+        self.imageLabel.setPixmap(tempPixmap)
 
 class BidFileAnnotationService:
   LOCAL_FILENAME_PATH = '/Users/harish/data/bidboard_images'
@@ -30,6 +94,8 @@ class BidFileAnnotationService:
         local_filename=local_filename
       )
       await unique_image.save()
+    else:
+      print("Found dupe image %s" % md5_hash)
     created = True
     bid_file_image = await db.BCBidFileImage.objects.get_or_none(
       bc_bid_file_id=bid_file.id,
@@ -58,12 +124,12 @@ class BidFileAnnotationService:
     except PDFPageCountError:
       print("Could not extract pages from %s" % bid_file.id)
       return
-    hasher = hashlib.md5()
     for i, page in enumerate(pages):
       page_number = i + 1
 
+      hasher = hashlib.md5()
       img_byte_arr = io.BytesIO()
-      page.save(img_byte_arr, format='JPEG')  # You can choose PNG or other formats depending on the image
+      page.save(img_byte_arr, format='PNG')  # You can choose PNG or other formats depending on the image
       img_byte_arr = img_byte_arr.getvalue()
       hasher.update(img_byte_arr)
       md5_hash = hasher.hexdigest()
@@ -132,9 +198,15 @@ class BidFileAnnotationService:
       if len(text.strip()) > 0 and int(ocr_result['conf'][i]) > 0:
         heights.append(ocr_result['height'][i])
     heights = sorted(heights)
+    if len(heights) == 0:
+      return None, None
+
     mean = np.mean(heights)
     std_dev = np.std(heights)
     heights = [height for height in heights if height < mean + 3 * std_dev]
+    if len(heights) == 0:
+      return None, None
+
     height_cutoff = int(heights[-1] * .75)
     candidates = []
     tops = []
@@ -404,6 +476,44 @@ class BidFileAnnotationService:
       annotation = db.UniqueImageAnnotation.construct(unique_image_id=bid_file_image.id)
 
     cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
+    panels = self.identify_panels(cv2_image)
+    if len(panels) < 2:
+      print("Could not find sidepanels")
+      return None
+
+    sidepanel = panels[-1]
+    page_number_text, page_number_coordinates = self.identify_page_number_from_sidepanel(cv2_image, sidepanel)
+    if page_number_text:
+      annotation.page_number = page_number_text
+      annotation.page_number_x1 = page_number_coordinates['left']
+      annotation.page_number_x2 = page_number_coordinates['right']
+      annotation.page_number_y1 = page_number_coordinates['top']
+      annotation.page_number_y2 = page_number_coordinates['bottom']
+      if created:
+        await annotation.update()
+      else:
+        await annotation.save()
+      return annotation
+    elif created:
+      if not annotation.valid: # protect valid annotations
+        await annotation.destroy()
+
+  async def manually_annotate_page_number(self, bid_file_image, force=False):
+    created = True
+    annotation = await db.UniqueImageAnnotation.objects.get_or_none(unique_image_id=bid_file_image.id, valid=True)
+    if annotation is not None:
+      return
+    annotation = db.UniqueImageAnnotation.construct(unique_image_id=bid_file_image.id)
+    app = QApplication([])
+    #loop = qasync.QEventLoop(app)
+    #asyncio.set_event_loop(loop)
+    viewer = BoundingBoxApp(bid_file_image.local_filename)  # Specify the image path
+    viewer.show()
+    app.exec_()
+    #await loop.run_forever()
+    return
+
+
     panels = self.identify_panels(cv2_image)
     if len(panels) < 2:
       print("Could not find sidepanels")
