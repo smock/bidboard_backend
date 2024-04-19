@@ -1,7 +1,7 @@
-import asyncio
 import os
 import hashlib
 import io
+from sqlalchemy import or_
 
 from databases import Database
 from pdf2image import convert_from_path
@@ -11,7 +11,6 @@ import cv2
 import numpy as np
 import pytesseract
 from PIL import Image
-import qasync
 from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QVBoxLayout
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QImage
 from PyQt5.QtCore import Qt, QPoint, QTimer, QRect
@@ -28,7 +27,7 @@ class BoundingBoxApp(QWidget):
 
   def initUI(self):
     self.setWindowTitle("Bounding Box Drawer")
-    self.setGeometry(100, 100, 800, 600)
+    self.setGeometry(100, 100, 1200, 900)
 
     self.layout = QVBoxLayout()
     self.imageLabel = QLabel(self)
@@ -255,11 +254,13 @@ class BidFileAnnotationService:
     elif len(candidates) > 0:
       # going to pick the largest one halfway down the page
       max_size = 0
-      print("searching candidates")
+      if debug:
+        print("searching candidates")
       for candidate in candidates:
         top = ocr_result['top'][candidate]
-        print(ocr_result['text'][candidate])
-        print(str(top) + ' ' + str(bordered_height))
+        if debug:
+          print(ocr_result['text'][candidate])
+          print(str(top) + ' ' + str(bordered_height))
         if top < bordered_height * .5:
           continue
         font_size = ocr_result['height'][candidate]
@@ -299,22 +300,16 @@ class BidFileAnnotationService:
     border_size = width
     bordered_image = cv2.copyMakeBorder(reverted_dilation, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT, value=[255, 255, 255])
 
-    page_number_text = None
-    page_number_coordinates = None
     # Perform OCR on the cropped image
     custom_config = "--oem 1 --psm 7"
     ocr_result = pytesseract.image_to_data(Image.fromarray(bordered_image), output_type=pytesseract.Output.DICT, config=custom_config)
     
-    bordered_height, bordered_width = bordered_image.shape[:2]
-    # Initialize variables to track the largest font size and its location
-    # Find the Largest Font Sized Text
     if debug:
       print(ocr_result)
       cv2.imshow("page num bordered image", bordered_image)
       cv2.waitKey(0)
       cv2.destroyAllWindows()
 
-    print(ocr_result)
     if len(ocr_result['text']) == 0:
       return
 
@@ -435,6 +430,9 @@ class BidFileAnnotationService:
         cv2.imshow('evaluating dilation', roi)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
+    if top is None:
+      top = 0
+      bottom = height - 1
     if debug:
       print(top)
       print(bottom)
@@ -532,13 +530,10 @@ class BidFileAnnotationService:
     return panels
 
   async def annotate_page_number(self, bid_file_image, force=False):
-    created = True
-    annotation = await db.UniqueImageAnnotation.objects.get_or_none(unique_image_id=bid_file_image.id)
-    if annotation is not None and not force:
+    annotations = await db.UniqueImageAnnotation.objects.filter(unique_image_id=bid_file_image.id).all()
+    if len(annotations) > 0 and not force:
       return
-    if annotation is None:
-      created = False
-      annotation = db.UniqueImageAnnotation.construct(unique_image_id=bid_file_image.id)
+    annotation = db.UniqueImageAnnotation.construct(unique_image_id=bid_file_image.id)
 
     cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
     panels = self.identify_panels(cv2_image)
@@ -554,33 +549,35 @@ class BidFileAnnotationService:
       annotation.page_number_x2 = page_number_coordinates['right']
       annotation.page_number_y1 = page_number_coordinates['top']
       annotation.page_number_y2 = page_number_coordinates['bottom']
-      if created:
-        await annotation.update()
-      else:
-        await annotation.save()
+      annotation.annotation_source = db.AnnotationSource.HEURISTICS.value
+      await annotation.save()
       return annotation
-    elif created:
-      if not annotation.valid: # protect valid annotations
-        await annotation.destroy()
 
-  async def manually_annotate_page_number(self, bid_file_image, force=False):
-    created = True
-    annotation = await db.UniqueImageAnnotation.objects.get_or_none(unique_image_id=bid_file_image.id, valid=True)
-    if annotation is not None:
+  async def manually_annotate_page_number(self, bid_file_image, force=False, use_panels=True):
+    annotations = await db.UniqueImageAnnotation.objects.filter(
+      unique_image_id=bid_file_image.id,
+      valid_roi = True
+    ).all()
+    if len(annotations) > 0 and not force:
       return
     annotation = db.UniqueImageAnnotation.construct(unique_image_id=bid_file_image.id)
+    print("manually annotating %s" % bid_file_image.id)
 
     cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
-    panels = self.identify_panels(cv2_image)
-    if len(panels) >= 2:
-      panel_coords = panels[-1]
-    else:
-      panel_coords = {
-        'left':0,
-        'top':0,
-        'right':cv2_image.shape[1] - 1,
-        'bottom':cv2_image.shape[0] - 1
-      }
+    panel_coords = {
+      'left':0,
+      'top':0,
+      'right':cv2_image.shape[1] - 1,
+      'bottom':cv2_image.shape[0] - 1
+    }
+
+    used_panels = False
+    if use_panels:
+      panels = self.identify_panels(cv2_image)
+      if len(panels) >= 2:
+        print("using panels")
+        panel_coords = panels[-1]
+        used_panels = True
 
     app = QApplication([])
     viewer = BoundingBoxApp(cv2_image[panel_coords['top']:panel_coords['bottom'], panel_coords['left']:panel_coords['right']])
@@ -588,7 +585,11 @@ class BidFileAnnotationService:
     app.exec_()
     coords = viewer.getBoundingBoxCoords()
     if coords is None:
-      return
+      if not used_panels:
+        return
+      else:
+        annotation = await self.manually_annotate_page_number(bid_file_image, force=force, use_panels=False)
+        return
 
     x1, y1, x2, y2 = coords
     x1 += panel_coords['left']
@@ -596,7 +597,7 @@ class BidFileAnnotationService:
     y1 += panel_coords['top']
     y2 += panel_coords['top']
     roi = cv2_image[y1:y2, x1:x2]
-    page_number_text = self.extract_page_number_from_roi(roi, debug=True)
+    page_number_text = self.extract_page_number_from_roi(roi)
     if not page_number_text:
       return False
 
@@ -606,6 +607,7 @@ class BidFileAnnotationService:
     annotation.page_number_y1 = y1
     annotation.page_number_y2 = y2
     annotation.valid = None
+    annotation.annotation_source = db.AnnotationSource.MANUAL.value
     await annotation.save()
     await self.review_annotation(annotation)
     
@@ -624,9 +626,15 @@ class BidFileAnnotationService:
     cv2.destroyAllWindows()
     if key == ord('y'):
       annotation.valid = True
+      annotation.valid_roi = True
+    elif key == ord('r'):
+      annotation.valid = False
+      annotation.valid_roi = True
     elif key == ord('n'):
       annotation.valid = False
+      annotation.valid_roi = False
     else:
       annotation.valid = None
+      annotation.valid_roi = None
     await annotation.update()
     return annotation

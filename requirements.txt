@@ -18,4 +18,4 @@ pytesseract
 tensorflow
 sklearn
 pyqt5
-qasync
+keras_tuner

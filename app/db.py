@@ -128,6 +128,9 @@ class BCBidFileImage(BaseModel):
   page_number: int = ormar.Integer(nullable=False)
   unique_image_id: UniqueImage = ormar.ForeignKey(UniqueImage, nullable=False)
 
+class AnnotationSource(Enum):
+  HEURISTICS = 0
+  MANUAL = 1
 
 class UniqueImageAnnotation(BaseModel):
   class Meta(BaseMeta):
@@ -139,3 +142,5 @@ class UniqueImageAnnotation(BaseModel):
   page_number_x2: int = ormar.Integer(nullable=False)
   page_number_y2: int = ormar.Integer(nullable=False)
   valid: bool = ormar.Boolean(nullable=True)
+  valid_roi: bool = ormar.Boolean(nullable=True)
+  annotation_source: int = ormar.Integer(nullable=True, choices=list(AnnotationSource))
