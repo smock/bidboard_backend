@@ -12,7 +12,10 @@ async def manually_annotate_drawings():
       valid_annotations = [a for a in unique_image.unique_image_annotations if a.valid_roi]
       if len(valid_annotations) > 0:
         continue
-      await bfas.manually_annotate_page_number(unique_image)
+      ret = await bfas.manually_annotate_page_number(unique_image)
+      if ret == -1:
+        await bfas.manually_annotate_page_number(unique_image, use_panels=False)
+
 
 if __name__ == '__main__':
   import sys

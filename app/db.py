@@ -117,6 +117,8 @@ class UniqueImage(BaseModel):
   md5_hash: str = ormar.String(nullable=False, max_length=100, unique=True)
   local_filename: str = ormar.String(nullable=True, max_length=100, unique=True)
   has_architectural_page_number: bool = ormar.Boolean(nullable=True)
+  architectural_page_number_probability: float = ormar.Float(nullable=True)
+  textract_filename: str = ormar.String(nullable=True, max_length=200)
 
 class BCBidFileImage(BaseModel):
   class Meta(BaseMeta):
@@ -144,3 +146,4 @@ class UniqueImageAnnotation(BaseModel):
   valid: bool = ormar.Boolean(nullable=True)
   valid_roi: bool = ormar.Boolean(nullable=True)
   annotation_source: int = ormar.Integer(nullable=True, choices=list(AnnotationSource))
+  refined: bool = ormar.Boolean(nullable=True)

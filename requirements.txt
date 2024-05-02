@@ -19,3 +19,6 @@ tensorflow
 sklearn
 pyqt5
 keras_tuner
+ultralytics
+boto3
+pypdf2

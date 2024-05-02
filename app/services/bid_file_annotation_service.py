@@ -161,7 +161,7 @@ class BidFileAnnotationService:
       img_byte_arr = img_byte_arr.getvalue()
       hasher.update(img_byte_arr)
       md5_hash = hasher.hexdigest()
-      image_path = os.path.join(BidFileAnnotationService.LOCAL_FILENAME_PATH, md5_hash)
+      image_path = f'{os.path.join(BidFileAnnotationService.LOCAL_FILENAME_PATH, md5_hash)}.png'
       page.save(image_path, 'PNG')
       await self.upsert_bid_file_image(bid_file, page_number, image_path, md5_hash)
       print(f"Saved: {image_path}")
@@ -187,10 +187,10 @@ class BidFileAnnotationService:
 
   def extract_coordinates_from_ocr_result(self, ocr_result, idx, border_size):
     return {
-      'left': ocr_result['left'][idx] - border_size,
-      'top': ocr_result['top'][idx] - border_size,
-      'right': ocr_result['left'][idx] - border_size + ocr_result['width'][idx],
-      'bottom': ocr_result['top'][idx] - border_size + ocr_result['height'][idx]
+      'x1': ocr_result['left'][idx] - border_size,
+      'y1': ocr_result['top'][idx] - border_size,
+      'x2': ocr_result['left'][idx] - border_size + ocr_result['width'][idx],
+      'y2': ocr_result['top'][idx] - border_size + ocr_result['height'][idx]
     }
 
   def extract_page_number(self, binary_inverted_image, psm=12, debug=False):
@@ -285,7 +285,7 @@ class BidFileAnnotationService:
       )
     return page_number_text, page_number_coordinates
   
-  def extract_page_number_from_roi(self, roi, debug=False):
+  def extract_page_number_from_roi(self, roi, psm=7, debug=False):
     roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
     # Apply a binary threshold to get a binary inverted image
     _, binary_inverted_image = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV)
@@ -301,7 +301,7 @@ class BidFileAnnotationService:
     bordered_image = cv2.copyMakeBorder(reverted_dilation, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT, value=[255, 255, 255])
 
     # Perform OCR on the cropped image
-    custom_config = "--oem 1 --psm 7"
+    custom_config = "--oem 1 --psm %s" % psm
     ocr_result = pytesseract.image_to_data(Image.fromarray(bordered_image), output_type=pytesseract.Output.DICT, config=custom_config)
     
     if debug:
@@ -312,8 +312,34 @@ class BidFileAnnotationService:
 
     if len(ocr_result['text']) == 0:
       return
-
-    return ' '.join(ocr_result['text']).strip()
+    
+    page_number = ''
+    coords = {
+      'x1': None,
+      'x2': None,
+      'y1': None,
+      'y2': None
+    }
+    for i in range(len(ocr_result['text'])):
+      fragment = ocr_result['text'][i].strip()
+      if len(fragment) == 0 and len(page_number) == 0:
+        continue
+      if len(page_number) > 0:
+        page_number += ' '
+        coords['x2'] = ocr_result['left'][i] + ocr_result['width'][i]
+        coords['y2'] = ocr_result['top'][i] + ocr_result['height'][i]
+      else:
+        coords = {
+          'x1': ocr_result['left'][i],
+          'x2': ocr_result['left'][i] + ocr_result['width'][i],
+          'y1': ocr_result['top'][i],
+          'y2': ocr_result['top'][i] + ocr_result['height'][i]
+        }
+      page_number += fragment
+    for idx in coords.keys():
+      if coords[idx] is not None:
+        coords[idx] -= border_size
+    return page_number, coords
 
 
   def display_images_side_by_side(self, image1, title1, image2, title2):
@@ -339,7 +365,7 @@ class BidFileAnnotationService:
 
 
   def identify_page_number_from_sidepanel(self, cv2_image, panel_coords, debug=False):
-    sidepanel = cv2_image[panel_coords['top']:panel_coords['bottom'], panel_coords['left']:panel_coords['right']]
+    sidepanel = cv2_image[panel_coords['y1']:panel_coords['y2'], panel_coords['x1']:panel_coords['x2']]
 
     if debug:
       cv2.imshow('processing sidepanel', sidepanel)
@@ -357,10 +383,10 @@ class BidFileAnnotationService:
     page_number_text, page_number_coordinates = self.extract_page_number(binary_inverted_sidepanel, debug=debug)
     if page_number_coordinates:
       page_number_coordinates = {
-        'left': page_number_coordinates['left'] + panel_coords['left'],
-        'right': page_number_coordinates['right'] + panel_coords['left'],
-        'top': page_number_coordinates['top'] + panel_coords['top'] + int(3 * height/4),
-        'bottom': page_number_coordinates['bottom'] + panel_coords['top'] + int(3 * height/4)
+        'x1': page_number_coordinates['x1'] + panel_coords['x1'],
+        'x2': page_number_coordinates['x2'] + panel_coords['x1'],
+        'y1': page_number_coordinates['y1'] + panel_coords['y1'] + int(3 * height/4),
+        'y2': page_number_coordinates['y2'] + panel_coords['y1'] + int(3 * height/4)
       }
     return page_number_text, page_number_coordinates
 
@@ -514,7 +540,7 @@ class BidFileAnnotationService:
             cv2.imshow('qualified vertical region', roi)
             cv2.waitKey(0)
             cv2.destroyAllWindows()
-          panels.append({'left': x1, 'right': x2, 'top': top, 'bottom': bottom})
+          panels.append({'x1': x1, 'x2': x2, 'y1': top, 'y2': bottom})
         else:
           if debug:
             cv2.imshow('unqualified vertical region', roi)
@@ -523,7 +549,7 @@ class BidFileAnnotationService:
 
     if debug:
       for panel in panels:
-        panel_image = cv2_image[panel['top']:panel['bottom'], panel['left']:panel['right']]
+        panel_image = cv2_image[panel['y1']:panel['y2'], panel['x1']:panel['x2']]
         cv2.imshow('panel', panel_image)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
@@ -545,15 +571,16 @@ class BidFileAnnotationService:
     page_number_text, page_number_coordinates = self.identify_page_number_from_sidepanel(cv2_image, sidepanel)
     if page_number_text:
       annotation.page_number = page_number_text
-      annotation.page_number_x1 = page_number_coordinates['left']
-      annotation.page_number_x2 = page_number_coordinates['right']
-      annotation.page_number_y1 = page_number_coordinates['top']
-      annotation.page_number_y2 = page_number_coordinates['bottom']
+      annotation.page_number_x1 = page_number_coordinates['x1']
+      annotation.page_number_x2 = page_number_coordinates['x2']
+      annotation.page_number_y1 = page_number_coordinates['y1']
+      annotation.page_number_y2 = page_number_coordinates['y2']
       annotation.annotation_source = db.AnnotationSource.HEURISTICS.value
       await annotation.save()
       return annotation
 
-  async def manually_annotate_page_number(self, bid_file_image, force=False, use_panels=True):
+
+  async def manually_annotate_page_number(self, bid_file_image, panel_coords=None, force=False, use_panels=True):
     annotations = await db.UniqueImageAnnotation.objects.filter(
       unique_image_id=bid_file_image.id,
       valid_roi = True
@@ -561,26 +588,28 @@ class BidFileAnnotationService:
     if len(annotations) > 0 and not force:
       return
     annotation = db.UniqueImageAnnotation.construct(unique_image_id=bid_file_image.id)
-    print("manually annotating %s" % bid_file_image.id)
+    print("manually annotating %s" % bid_file_image.local_filename)
 
     cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
-    panel_coords = {
-      'left':0,
-      'top':0,
-      'right':cv2_image.shape[1] - 1,
-      'bottom':cv2_image.shape[0] - 1
-    }
-
-    used_panels = False
-    if use_panels:
-      panels = self.identify_panels(cv2_image)
-      if len(panels) >= 2:
-        print("using panels")
-        panel_coords = panels[-1]
-        used_panels = True
+    if panel_coords is None:
+      panel_coords = {
+        'x1':0,
+        'y1':0,
+        'x2':cv2_image.shape[1] - 1,
+        'y2':cv2_image.shape[0] - 1
+      }
+      used_panels = False
+      if use_panels:
+        panels = self.identify_panels(cv2_image)
+        if len(panels) >= 2:
+          print("using panels")
+          panel_coords = panels[-1]
+          used_panels = True
+    else:
+      used_panels = True
 
     app = QApplication([])
-    viewer = BoundingBoxApp(cv2_image[panel_coords['top']:panel_coords['bottom'], panel_coords['left']:panel_coords['right']])
+    viewer = BoundingBoxApp(cv2_image[panel_coords['y1']:panel_coords['y2'], panel_coords['x1']:panel_coords['x2']])
     viewer.show()
     app.exec_()
     coords = viewer.getBoundingBoxCoords()
@@ -588,30 +617,78 @@ class BidFileAnnotationService:
       if not used_panels:
         return
       else:
-        annotation = await self.manually_annotate_page_number(bid_file_image, force=force, use_panels=False)
-        return
+        return -1
 
+    height, width = cv2_image.shape[:2]
     x1, y1, x2, y2 = coords
-    x1 += panel_coords['left']
-    x2 += panel_coords['left']
-    y1 += panel_coords['top']
-    y2 += panel_coords['top']
+    x1 += max([panel_coords['x1'] - 10, 0])
+    x2 += min([panel_coords['x1'] + 10, width])
+    y1 += max([panel_coords['y1'] - 10, 0])
+    y2 += min([panel_coords['y1'] + 10, height])
     roi = cv2_image[y1:y2, x1:x2]
-    page_number_text = self.extract_page_number_from_roi(roi)
-    if not page_number_text:
+    page_number_text, coords = self.extract_page_number_from_roi(roi)
+    if not page_number_text or len(page_number_text) == 0:
       return False
 
     annotation.page_number = page_number_text
-    annotation.page_number_x1 = x1
-    annotation.page_number_x2 = x2
-    annotation.page_number_y1 = y1
-    annotation.page_number_y2 = y2
+    annotation.page_number_x1 = coords['x1'] + x1
+    annotation.page_number_x2 = coords['x2'] + x1
+    annotation.page_number_y1 = coords['y1'] + y1
+    annotation.page_number_y2 = coords['y2'] + y1
     annotation.valid = None
     annotation.annotation_source = db.AnnotationSource.MANUAL.value
     await annotation.save()
-    await self.review_annotation(annotation)
+    annotation = await self.review_annotation(annotation)
     
     return annotation
+
+  async def refine_annotation(self, annotation, force=False):
+    if annotation.refined is True and not force:
+      return
+    if annotation.valid_roi is False:
+      return
+
+    bid_file_image = await db.UniqueImage.objects.get(id=annotation.unique_image_id)
+    cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
+    height, width = cv2_image.shape[:2]
+    new_x1 = max([annotation.page_number_x1 - 20, 0])
+    new_x2 = min([annotation.page_number_x2 + 20, width])
+    new_y1 = max([annotation.page_number_y1 - 20, 0])
+    new_y2 = min([annotation.page_number_y2 + 20, height])
+    roi = cv2_image[new_y1:new_y2, new_x1:new_x2]
+    page_number_text, coords = self.extract_page_number_from_roi(roi)
+    if page_number_text is None or len(page_number_text) == 0:
+      annotation.valid_roi = False
+      annotation.valid = False
+      await annotation.update()
+      annotation = await self.manually_annotate_page_number(bid_file_image, panel_coords={'x1': new_x1, 'y1': new_y1, 'x2': new_x2, 'y2': new_y2}, force=True)
+      return annotation
+    annotation.page_number = page_number_text
+
+    annotation.page_number_x1 = coords['x1'] + new_x1
+    annotation.page_number_x2 = coords['x2'] + new_x1
+    annotation.page_number_y1 = coords['y1'] + new_y1
+    annotation.page_number_y2 = coords['y2'] + new_y1
+    annotation.refined = True
+    page_number_image = cv2_image[annotation.page_number_y1:annotation.page_number_y2, annotation.page_number_x1:annotation.page_number_x2]
+    self.display_images_side_by_side(cv2_image, "Original", page_number_image, annotation.page_number)
+    key = cv2.waitKey(0)
+    cv2.destroyAllWindows()
+    if key == ord('y'):
+      annotation.valid_roi=True
+      annotation.valid=True
+      await annotation.update()
+    elif key == ord('r'):
+      annotation.valid_roi=True
+      annotation.valid=False
+      await annotation.update()
+    else:
+      annotation.valid_roi = False
+      annotation.valid = False
+      await annotation.update()
+      annotation = await self.manually_annotate_page_number(bid_file_image, panel_coords={'x1': new_x1, 'y1': new_y1, 'x2': new_x2, 'y2': new_y2}, force=True)
+    return annotation
+
 
   async def review_annotation(self, annotation, force=False):
     if annotation.valid is not None and not force:
@@ -619,7 +696,6 @@ class BidFileAnnotationService:
 
     bid_file_image = await db.UniqueImage.objects.get(id=annotation.unique_image_id)
     cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
-
     page_number_image = cv2_image[annotation.page_number_y1:annotation.page_number_y2, annotation.page_number_x1:annotation.page_number_x2]
     self.display_images_side_by_side(cv2_image, "Original", page_number_image, annotation.page_number)
     key = cv2.waitKey(0)
@@ -627,9 +703,11 @@ class BidFileAnnotationService:
     if key == ord('y'):
       annotation.valid = True
       annotation.valid_roi = True
+      annotation.refined = True
     elif key == ord('r'):
       annotation.valid = False
       annotation.valid_roi = True
+      annotation.refined = True
     elif key == ord('n'):
       annotation.valid = False
       annotation.valid_roi = False

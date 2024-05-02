@@ -2,12 +2,14 @@ import asyncio
 import cv2
 
 from app import db
+from app.services.bid_file_annotation_service import BidFileAnnotationService
 
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import GlobalAveragePooling2D, Dense, Input, Dropout, Layer
 from tensorflow.keras.applications import ResNet50
 from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.models import load_model
 import keras_tuner as kt
 import numpy as np
 
@@ -51,13 +53,18 @@ def prepare_datasets(dataset, batch_size, train_size=0.8, shuffle_buffer_size=10
   
   return train_dataset.batch(batch_size), val_dataset.batch(batch_size)
 
+@tf.keras.utils.register_keras_serializable()
 class GrayscaleToRGB(Layer):
     """Custom layer to convert grayscale images to RGB by replicating the channels."""
-    def __init__(self):
-        super(GrayscaleToRGB, self).__init__()
+    def __init__(self, **kwargs):
+        super(GrayscaleToRGB, self).__init__(**kwargs)
     
     def call(self, inputs):
         return tf.image.grayscale_to_rgb(inputs)
+
+    def get_config(self):
+        # Return the base config so that TensorFlow can handle the serialization and deserialization
+        return super().get_config()
 
 def build_model(hp):
     base_model = ResNet50(include_top=False, weights='imagenet', input_shape=(512, 512, 3))
@@ -67,12 +74,12 @@ def build_model(hp):
         GrayscaleToRGB(),
         base_model,
         GlobalAveragePooling2D(),
-        Dropout(rate=hp.Float('dropout_rate', min_value=0.0, max_value=0.3, step=0.05)),  # Narrowed range for dropout
-        Dense(hp.Int('units', min_value=512, max_value=512, default=512), activation='relu'),  # Fixed units
+        Dropout(rate=hp.Float('dropout_rate', min_value=0.0, max_value=0.5, step=0.1)),  # Narrowed range for dropout
+        Dense(hp.Int('units', min_value=128, max_value=1024, step=128), activation='relu'),  # Fixed units
         Dense(2, activation='softmax')
     ])
 
-    hp_learning_rate = hp.Float('learning_rate', min_value=0.001, max_value=0.001, default=0.001)  # Fixed learning rate
+    hp_learning_rate = hp.Float('learning_rate', min_value=1e-5, max_value=1e-2, sampling='log')  # Wider range for learning rate
     model.compile(optimizer=Adam(learning_rate=hp_learning_rate),
                   loss='sparse_categorical_crossentropy',
                   metrics=['accuracy'])
@@ -81,15 +88,48 @@ def build_model(hp):
 def tune_model(train_ds, val_ds):
     tuner = kt.Hyperband(build_model,
                          objective='val_accuracy',
-                         max_epochs=10,  # Fixed optimal epoch count
+                         max_epochs=10,
                          factor=3,
                          directory='/Users/harish/data/bidboard_models/model_tuning',
-                         project_name='arch_draw_tuning_dropout')
-
-    # Continue with the same example for train_ds and val_ds
-    tuner.search(train_ds, validation_data=val_ds, epochs=10, callbacks=[tf.keras.callbacks.EarlyStopping(patience=5)])
+                         project_name='arch_draw_tuning_expanded_search')
+    tuner.reload()  # This reloads the tuner from the saved directory
     best_model = tuner.get_best_models(num_models=1)[0]
     return best_model
+    tuner.search(train_ds, validation_data=val_ds, epochs=10)
+    best_model = tuner.get_best_models(num_models=1)[0]
+    return best_model
+
+def build_fixed_model():
+  # Base model, not trainable
+  base_model = ResNet50(include_top=False, weights='imagenet', input_shape=(512, 512, 3))
+  base_model.trainable = False
+
+  # Complete model architecture
+  model = Sequential([
+      Input(shape=(512, 512, 1)),
+      tf.keras.layers.Lambda(lambda x: tf.image.grayscale_to_rgb(x)),  # Convert grayscale to RGB
+      base_model,
+      GlobalAveragePooling2D(),
+      Dropout(rate=0.05),  # Fixed dropout rate
+      Dense(512, activation='relu'),  # Fixed number of units in the Dense layer
+      Dense(2, activation='softmax')  # Output layer
+  ])
+
+  # Fixed learning rate
+  learning_rate = 0.001
+  model.compile(optimizer=Adam(learning_rate=learning_rate),
+                loss='sparse_categorical_crossentropy',
+                metrics=['accuracy'])
+  
+  return model
+
+def train_fixed_model(train_ds, val_ds):
+    # Build the model
+    model = build_fixed_model()
+        
+    # Train the model
+    history = model.fit(train_ds, validation_data=val_ds, epochs=10)
+    return model
 
 
 async def train_drawing_detector(batch_size, augment):
@@ -98,25 +138,31 @@ async def train_drawing_detector(batch_size, augment):
 
   best_model = tune_model(train_dataset, val_dataset)
   best_model.save('/Users/harish/data/bidboard_models/dropout_tuned_drawing_model_optimized.keras')
+  #best_model = train_fixed_model(train_dataset, val_dataset)
+  #best_model.save('/Users/harish/data/bidboard_models/dropout_tuned_drawing_model_optimized.keras')
 
 
-async def flag_drawings(model):
+async def flag_drawings():
+  #print(build_fixed_model().summary())
+  #model = load_model('/Users/harish/data/bidboard_models/dropout_tuned_drawing_model_optimized.keras', custom_objects={'GrayscaleToRGB': GrayscaleToRGB})
+  model = tune_model([], [])
+  #print(model.summary())
+  #bfas = BidFileAnnotationService(db.database)  
   async with db.database:
-    for bid_file_image in await db.UniqueImage.objects.filter(has_architectural_page_number=None).all():
+    for bid_file_image in await db.UniqueImage.objects.all():
       preproccesed = preprocess_image(bid_file_image.local_filename, (512, 512))
-      #arr = np.array([preproccesed])
       [[no_drawing, yes_drawing]] = model.predict(np.expand_dims(preproccesed, axis=0))
-      label = 'DRAWING' if yes_drawing > no_drawing else 'BLERG'
-      label += '| ' + str(yes_drawing)
-      image = cv2.imread(bid_file_image.local_filename)
-      cv2.imshow(label, image)
-      cv2.waitKey(0)
-      cv2.destroyAllWindows()
+      bid_file_image.architectural_page_number_probability = yes_drawing
+      await bid_file_image.update()
+      if yes_drawing <= no_drawing:
+         continue
+      #await bfas.flag_architectural_page_number(bid_file_image)
 
 
 if __name__ == '__main__':
   import sys
 
-  asyncio.run(train_drawing_detector(32, False))
+  #asyncio.run(train_drawing_detector(32, False))
+  asyncio.run(flag_drawings())
 
   sys.exit()
