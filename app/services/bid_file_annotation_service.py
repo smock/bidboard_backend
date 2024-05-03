@@ -593,10 +593,10 @@ class BidFileAnnotationService:
     cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
     if panel_coords is None:
       panel_coords = {
-        'x1':0,
-        'y1':0,
-        'x2':cv2_image.shape[1] - 1,
-        'y2':cv2_image.shape[0] - 1
+        'x1': 0,
+        'y1': 0,
+        'x2': cv2_image.shape[1] - 1,
+        'y2': cv2_image.shape[0] - 1
       }
       used_panels = False
       if use_panels:
@@ -619,79 +619,21 @@ class BidFileAnnotationService:
       else:
         return -1
 
-    height, width = cv2_image.shape[:2]
     x1, y1, x2, y2 = coords
-    x1 += max([panel_coords['x1'] - 10, 0])
-    x2 += min([panel_coords['x1'] + 10, width])
-    y1 += max([panel_coords['y1'] - 10, 0])
-    y2 += min([panel_coords['y1'] + 10, height])
-    roi = cv2_image[y1:y2, x1:x2]
-    page_number_text, coords = self.extract_page_number_from_roi(roi)
-    if not page_number_text or len(page_number_text) == 0:
-      return False
 
-    annotation.page_number = page_number_text
-    annotation.page_number_x1 = coords['x1'] + x1
-    annotation.page_number_x2 = coords['x2'] + x1
-    annotation.page_number_y1 = coords['y1'] + y1
-    annotation.page_number_y2 = coords['y2'] + y1
-    annotation.valid = None
+    annotation.page_number_x1 = x1 + panel_coords['x1']
+    annotation.page_number_x2 = x2 + panel_coords['x1']
+    annotation.page_number_y1 = y1 + panel_coords['y1']
+    annotation.page_number_y2 = y2 + panel_coords['y1']
     annotation.annotation_source = db.AnnotationSource.MANUAL.value
+    annotation.valid_roi = None
     await annotation.save()
     annotation = await self.review_annotation(annotation)
     
     return annotation
 
-  async def refine_annotation(self, annotation, force=False):
-    if annotation.refined is True and not force:
-      return
-    if annotation.valid_roi is False:
-      return
-
-    bid_file_image = await db.UniqueImage.objects.get(id=annotation.unique_image_id)
-    cv2_image = cv2.imread(bid_file_image.local_filename, cv2.IMREAD_COLOR)
-    height, width = cv2_image.shape[:2]
-    new_x1 = max([annotation.page_number_x1 - 20, 0])
-    new_x2 = min([annotation.page_number_x2 + 20, width])
-    new_y1 = max([annotation.page_number_y1 - 20, 0])
-    new_y2 = min([annotation.page_number_y2 + 20, height])
-    roi = cv2_image[new_y1:new_y2, new_x1:new_x2]
-    page_number_text, coords = self.extract_page_number_from_roi(roi)
-    if page_number_text is None or len(page_number_text) == 0:
-      annotation.valid_roi = False
-      annotation.valid = False
-      await annotation.update()
-      annotation = await self.manually_annotate_page_number(bid_file_image, panel_coords={'x1': new_x1, 'y1': new_y1, 'x2': new_x2, 'y2': new_y2}, force=True)
-      return annotation
-    annotation.page_number = page_number_text
-
-    annotation.page_number_x1 = coords['x1'] + new_x1
-    annotation.page_number_x2 = coords['x2'] + new_x1
-    annotation.page_number_y1 = coords['y1'] + new_y1
-    annotation.page_number_y2 = coords['y2'] + new_y1
-    annotation.refined = True
-    page_number_image = cv2_image[annotation.page_number_y1:annotation.page_number_y2, annotation.page_number_x1:annotation.page_number_x2]
-    self.display_images_side_by_side(cv2_image, "Original", page_number_image, annotation.page_number)
-    key = cv2.waitKey(0)
-    cv2.destroyAllWindows()
-    if key == ord('y'):
-      annotation.valid_roi=True
-      annotation.valid=True
-      await annotation.update()
-    elif key == ord('r'):
-      annotation.valid_roi=True
-      annotation.valid=False
-      await annotation.update()
-    else:
-      annotation.valid_roi = False
-      annotation.valid = False
-      await annotation.update()
-      annotation = await self.manually_annotate_page_number(bid_file_image, panel_coords={'x1': new_x1, 'y1': new_y1, 'x2': new_x2, 'y2': new_y2}, force=True)
-    return annotation
-
-
   async def review_annotation(self, annotation, force=False):
-    if annotation.valid is not None and not force:
+    if annotation.valid_roi is not None and not force:
       return
 
     bid_file_image = await db.UniqueImage.objects.get(id=annotation.unique_image_id)
@@ -701,18 +643,10 @@ class BidFileAnnotationService:
     key = cv2.waitKey(0)
     cv2.destroyAllWindows()
     if key == ord('y'):
-      annotation.valid = True
       annotation.valid_roi = True
-      annotation.refined = True
-    elif key == ord('r'):
-      annotation.valid = False
-      annotation.valid_roi = True
-      annotation.refined = True
     elif key == ord('n'):
-      annotation.valid = False
       annotation.valid_roi = False
     else:
-      annotation.valid = None
       annotation.valid_roi = None
     await annotation.update()
     return annotation

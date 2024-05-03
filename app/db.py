@@ -133,12 +133,13 @@ class BCBidFileImage(BaseModel):
 class AnnotationSource(Enum):
   HEURISTICS = 0
   MANUAL = 1
+  YOLO_MODEL_V1 = 2
 
 class UniqueImageAnnotation(BaseModel):
   class Meta(BaseMeta):
     tablename = "unique_image_annotations"
   unique_image_id: UniqueImage = ormar.ForeignKey(UniqueImage, nullable=False, related_name='unique_image_annotations')
-  page_number: str = ormar.String(nullable=False, max_length=100)
+  page_number: str = ormar.String(nullable=True, max_length=100)
   page_number_x1: int = ormar.Integer(nullable=False)
   page_number_y1: int = ormar.Integer(nullable=False)
   page_number_x2: int = ormar.Integer(nullable=False)
@@ -147,3 +148,4 @@ class UniqueImageAnnotation(BaseModel):
   valid_roi: bool = ormar.Boolean(nullable=True)
   annotation_source: int = ormar.Integer(nullable=True, choices=list(AnnotationSource))
   refined: bool = ormar.Boolean(nullable=True)
+  confidence: float = ormar.Float(nullable=True)

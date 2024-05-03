@@ -41,7 +41,7 @@ async def train_model():
 
   # Fine-tuning
   results = model.train(data='/Users/harish/data/bidboard_training_data/drawing_number_yolov8/sheet_drawing_yolov8.yaml',
-                        imgsz=2560,
+                        imgsz=1280,
                         epochs=200,
                         device='mps',
                         single_cls=True)

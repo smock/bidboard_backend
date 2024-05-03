@@ -135,7 +135,11 @@ class BuildingConnectedDataService:
     response = self.session.get(endpoint)
     if response.status_code == 403:
       return
-    items = response.json()['items']
+    try:
+      items = response.json()['items']
+    except KeyError:
+      print(response.json())
+      return
     for item in items:
       try:
         file = await self.upsert_bid_file(bid, item, parent_folder)
@@ -147,11 +151,11 @@ class BuildingConnectedDataService:
 
   async def sync_bids(self):
     self.init_session()
-    for archive_state in ['ACTIVE_ONLY']:#['ARCHIVED_ONLY', 'ACTIVE_ONLY']:
+    for archive_state in ['ARCHIVED_ONLY', 'ACTIVE_ONLY']:
       for workflow_state in db.BCBidStatus:
         startIndex = 0
-        print("Syncing %s - %s bids, index %s" % (archive_state, workflow_state, startIndex))
         while True:
+          print("Syncing %s - %s bids, index %s" % (archive_state, workflow_state, startIndex))
           response = self.session.get(BuildingConnectedDataService.OPPORTUNITIES_API_ENDPONT, params={
             'startIndex': startIndex,
             'count': 50,

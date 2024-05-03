@@ -13,8 +13,18 @@ async def manually_annotate_drawings():
       if len(valid_annotations) > 0:
         continue
       ret = await bfas.manually_annotate_page_number(unique_image)
-      if ret == -1:
-        await bfas.manually_annotate_page_number(unique_image, use_panels=False)
+      while True:
+        if ret == -1:
+          ret = await bfas.manually_annotate_page_number(unique_image, use_panels=False)
+        elif ret == None or ret.valid_roi != None:
+          break
+        else:
+          ret = await bfas.manually_annotate_page_number(unique_image, panel_coords={
+            'x1': ret.page_number_x1,
+            'x2': ret.page_number_x2,
+            'y1': ret.page_number_y1,
+            'y2': ret.page_number_y2
+          })
 
 
 if __name__ == '__main__':

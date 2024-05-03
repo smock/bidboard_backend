@@ -6,7 +6,7 @@ from app.services.bid_file_annotation_service import BidFileAnnotationService
 async def review_annotation_candidates():
   async with db.database:
     bfas = BidFileAnnotationService(db.database)
-    for annotation in await db.UniqueImageAnnotation.objects.filter(valid=None).all():
+    for annotation in await db.UniqueImageAnnotation.objects.filter(valid_roi=None, annotation_source = db.AnnotationSource.YOLO_MODEL_V1.value).all():
       await bfas.review_annotation(annotation, force=True)
 
 if __name__ == '__main__':
